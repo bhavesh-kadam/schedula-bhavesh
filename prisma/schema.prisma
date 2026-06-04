@@ -1,0 +1,187 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Get a free hosted Postgres database in seconds: `npx create-db`
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+  moduleFormat = "cjs"
+}
+
+generator erd {
+  provider = "prisma-erd-generator"
+  output = "../ERD.svg"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum Role {
+  DOCTOR
+  PATIENT
+}
+
+enum ActiveStatus {
+  ACTIVE
+  ON_LEAVE
+  RETIRED
+}
+
+enum Gender {
+  MALE
+  FEMALE
+  TRANSGENDER
+}
+
+enum BloodGroup {
+  O_POSITIVE
+  A_POSITIVE
+  B_POSITIVE
+  AB_POSITIVE
+
+  O_NEGATIVE
+  A_NEGATIVE
+  B_NEGATIVE
+  AB_NEGATIVE
+}
+
+enum AppointmentStatus {
+  BOOKED
+  COMPLETED
+  CANCELLED
+  RESCHEDULED
+}
+
+enum Day {
+  MONDAY
+  TUESDAY
+  WEDNESDAY
+  THURSDAY
+  FRIDAY
+  SATURDAY
+  SUNDAY
+}
+
+model User {
+  id String @id @default(uuid())
+  firstName String
+  lastName String
+  mobileNo String
+  email String @unique
+  dob DateTime
+  gender Gender
+
+  hash String
+  role Role @default(PATIENT)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  deletedAt DateTime?
+
+  patient Patient?
+  doctor Doctor?
+
+  notification Notification[]
+
+  @@index([role])
+}
+
+model Patient {
+  id String @id @default(uuid())
+  pid String
+  bloodGroup BloodGroup
+  pastIllness String @db.Text
+
+  userId String @unique
+  user User @relation(fields: [userId], references: [id])
+
+  admittedAt DateTime
+  dischargeAt DateTime?
+
+  appointment Appointment[]
+
+  @@index([userId])
+}
+
+
+model Doctor {
+  id String @id @default(uuid())
+  licenseNo String @unique
+  speciality String
+  yearOfExperience Int
+
+  userId String @unique
+  user User @relation(fields: [userId], references: [id])
+
+  activeStatus ActiveStatus
+  appointment Appointment[]
+  availability Availability[]
+
+  updatedAt DateTime @updatedAt
+  deletedAt DateTime?
+
+  @@index([userId])
+}
+
+model Appointment {
+  id String @id @default(uuid())
+
+  scheduledDay DateTime
+  startTime DateTime
+  endTime DateTime
+
+  patientId String
+  patient Patient @relation(fields: [patientId], references: [id])
+
+  doctorId String
+  doctor Doctor @relation(fields: [doctorId], references: [id])
+
+  appointmentStatus AppointmentStatus @default(BOOKED)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  deletedAt DateTime?
+
+  @@index([doctorId])
+  @@index([patientId])
+  @@unique([patientId, doctorId, scheduledDay, startTime, endTime])
+}
+
+model Availability {
+  id String @id @default(uuid())
+
+  doctorId String
+  doctor Doctor @relation(fields: [doctorId], references: [id])
+
+  dayOfWeek Day
+  startTime DateTime
+  endTime DateTime
+
+  @@index([doctorId])
+}
+
+
+model Notification {
+  id String @id @default(uuid())
+
+  userId String
+  user User @relation(fields: [userId], references: [id])
+
+  title String
+  message String
+
+  isRead Boolean @default(false)
+
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+}
+
+
+
+
+
+
+
