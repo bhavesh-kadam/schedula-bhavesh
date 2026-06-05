@@ -22,6 +22,10 @@ export class AuthController {
       return {
         message: 'Account created successfully, log in to continue'
       }
+    }else {
+      return {
+        error: "Failed to create a new account, try with new email or after some time"
+      }
     }
   }
 

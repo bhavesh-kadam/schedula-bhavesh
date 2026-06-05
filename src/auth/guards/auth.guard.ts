@@ -1,51 +1,35 @@
 import { CanActivate, ExecutionContext, ForbiddenException, Injectable, UnauthorizedException } from "@nestjs/common";
 import { JwtService } from "@nestjs/jwt";
 import { Request } from "express";
-import { PrismaService } from "src/prisma/prisma.service";
 import 'dotenv/config';
 
 @Injectable()
 export class AuthGuard implements CanActivate {
     constructor (
         private jwt: JwtService,
-        private prisma: PrismaService
     ) {}
 
 
     async canActivate(context: ExecutionContext): Promise<boolean> {
         const request = context.switchToHttp().getRequest();
         const cookie = request.cookies;
-        const primaryTokenRetrival = cookie.accessToken;
-        let secondTokenRetrival: string | undefined;
-        if (!primaryTokenRetrival) {
-            try {
-                secondTokenRetrival = this.extractTokenFromHeader(request);
-            } catch (err) {
-                console.error(err);
-                throw new ForbiddenException("Login first to continue")
-            }
-        }
+        const primaryTokenRetrival = cookie.access_token;
 
-        const token = primaryTokenRetrival ?? secondTokenRetrival;
+        const token = primaryTokenRetrival ?? this.extractTokenFromHeader(request);
+
+        if (!token) {
+            throw new UnauthorizedException("Login first to continue");
+        }
 
         try{
             const payload = await this.jwt.verifyAsync(token, {secret: process.env.ACCESS_TOKEN_SECRET});
+            request.user = payload;
 
-            const session = await this.prisma.refreshToken.findUnique({
-                where: { id: payload.jti },
-                select: {revokedAt: true},
-            });
+            return true;
 
-            if (!session || session.revokedAt) {
-                throw new UnauthorizedException("Invalid Session");
-            }
-
-            request['user'] = payload;
         } catch (err) {
             throw new UnauthorizedException("Invalid or expired token");
         }
-
-        return true;
     }
 
     private extractTokenFromHeader(request: Request): string | undefined {
