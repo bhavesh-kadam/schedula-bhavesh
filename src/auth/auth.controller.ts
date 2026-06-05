@@ -2,6 +2,7 @@ import { Body, Controller, Post, Res } from '@nestjs/common';
 import { AuthService } from './auth.service';
 import { RegisterDto } from './dto/register.dto';
 import type { Response } from 'express';
+import { LoginDto } from './dto/login.dto';
 
 @Controller('auth')
 export class AuthController {
@@ -12,10 +13,33 @@ export class AuthController {
     @Body() dto: RegisterDto,
     @Res({ passthrough: true}) res: Response,
   ) {
-    const tokens = await this.authService.signUp(dto);
+    const action = await this.authService.signUp(dto);
 
-    if (!tokens) { return }
-    this.setCookies(res, tokens.accessToken, tokens.refreshToken);
+    // if (!tokens) { return }
+    // this.setCookies(res, tokens.accessToken, tokens.refreshToken);
+
+    if (action) {
+      return {
+        message: 'Account created successfully, log in to continue'
+      }
+    }
+  }
+
+  @Post('login')
+  async login(
+    @Body() dto: LoginDto,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    const { accessToken, refreshToken, user } = await this.authService.login(dto);
+
+    if (!accessToken && !refreshToken) return;
+
+    this.setCookies( res, accessToken, refreshToken);
+
+    return {
+      message: 'Logged in',
+      user: user,
+    }
   }
 
 

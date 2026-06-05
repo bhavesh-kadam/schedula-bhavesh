@@ -7,6 +7,7 @@ import { JwtService } from '@nestjs/jwt';
 import 'dotenv/config'
 import { createHmac } from 'node:crypto';
 import { v4 as uuidv4 } from 'uuid';
+import { LoginDto } from './dto/login.dto';
 
 @Injectable()
 export class AuthService {
@@ -117,18 +118,25 @@ export class AuthService {
                     return user;
                 })
 
-                const tokens = await this.signToken(
-                    userAction.id,
-                    userAction.firstName,
-                    userAction.email,
-                    userAction.role,
-                );
+                // i dont return token after sign up, rather after login, this was just for testing
+                // let me know you convention, i can alter my code to retrn tokens after sign up also
 
-                if (!tokens) {return console.error("failed to generate tokens")}
+                // const tokens = await this.signToken(
+                //     userAction.id,
+                //     userAction.firstName,
+                //     userAction.email,
+                //     userAction.role,
+                // );
 
-                await this.saveRefreshToken(userAction.id, tokens.jti, tokens.refreshToken)
+                // if (!tokens) {return console.error("failed to generate tokens")}
 
-                return tokens;
+                // await this.saveRefreshToken(userAction.id, tokens.jti, tokens.refreshToken)
+
+                // return tokens;
+
+                return {
+                    messge: "Accout created successfully, please login as next step"
+                }
             }
         } catch (err) {
             if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
@@ -136,5 +144,46 @@ export class AuthService {
             }
             throw err;
         }
+    }
+
+    async login (dto: LoginDto) {
+        const user = await this.prisma.user.findUnique({
+            where: {email: dto.email},
+            select: {
+                id: true,
+                firstName: true,
+                lastName: true,
+                hash: true,
+                email: true,
+                role: true,
+            }
+        });
+
+        if (!user) {
+            throw new ForbiddenException("Invalid Credentials")
+        }
+
+        const pwMatch = argon.verify(user.hash, dto.password);
+
+        if (!pwMatch) {
+            throw new ForbiddenException("Invalid credentials");
+        }
+
+        const tokens = await this.signToken(user.id, user.firstName, user.email, user.role);
+
+        if (!tokens) { throw new Error("failed to generate tokens")};
+
+        await this.saveRefreshToken(user.id, tokens.jti, tokens.refreshToken)
+
+        return {
+            ...tokens,
+            user: {
+                id: user.id,
+                firstName: user.firstName,
+                lasName: user.lastName,
+                role: user.role,
+            }
+        }
+        
     }
 }
