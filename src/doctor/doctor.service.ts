@@ -39,7 +39,8 @@ export class DoctorService {
     async saveDoctorProfile ( dto: SaveProfileDto, userId: string) {
 
         const existingDoctor = await this.prisma.doctor.findUnique({
-            where: {userId}
+            where: {userId},
+            select: {id: true}
         });
 
         if (existingDoctor) {
@@ -73,7 +74,10 @@ export class DoctorService {
 
     async updateDoctorProfile (dto: UpdateProfileDto, userId: string) {
 
-        const doctor = await this.prisma.doctor.findUnique({where: {userId,}});
+        const doctor = await this.prisma.doctor.findUnique({
+            where: {userId},
+            select: {id: true}
+        });
 
         if (!doctor) {
             throw new UnauthorizedException("Could not verify doctor account, please verify your role")
