@@ -1,10 +1,11 @@
-import { Controller, Get, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Patch, Post, UseGuards } from '@nestjs/common';
 import { DoctorService } from './doctor.service';
 import { AuthGuard } from 'src/auth/guards/auth.guard';
 import { RoleGuard } from 'src/auth/guards/role.guard';
 import { Roles } from 'src/common/decorators/roles.decorator';
 import { Role } from 'src/generated/prisma/enums';
 import { GetUser } from 'src/common/decorators/getUser.decorator';
+import { SaveProfileDto, UpdateProfileDto } from './dto/doctor-profile.dto';
 
 interface JwtPayload {
   sub: string;
@@ -26,5 +27,25 @@ export class DoctorController {
   ) {
     console.log(user);
     return this.doctorService.fetchDoctorProfile(user.sub);
+  }
+
+  @UseGuards(AuthGuard, RoleGuard)
+  @Roles(Role.DOCTOR)
+  @Post('/profile')
+  async saveDoctorProfile (
+    @GetUser() user: JwtPayload,
+    @Body() dto: SaveProfileDto
+  ) {
+    return this.doctorService.saveDoctorProfile(dto, user.sub)
+  }
+
+  @UseGuards(AuthGuard, RoleGuard)
+  @Roles(Role.DOCTOR)
+  @Patch('/profile')
+  async updateDoctorProfile (
+    @GetUser() user: JwtPayload,
+    @Body() dto: UpdateProfileDto
+  ) {
+    return this.doctorService.updateDoctorProfile(dto, user.sub)
   }
 }

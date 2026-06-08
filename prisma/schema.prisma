@@ -91,15 +91,12 @@ model User {
 
 model Patient {
   id String @id @default(uuid())
-  pid String
-  bloodGroup BloodGroup
-  pastIllness String @db.Text
+  pid String @unique
+  bloodGroup BloodGroup?
+  pastIllness String? @db.Text
 
   userId String @unique
-  user User @relation(fields: [userId], references: [id])
-
-  admittedAt DateTime
-  dischargeAt DateTime?
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   appointment Appointment[]
 
@@ -110,13 +107,16 @@ model Patient {
 model Doctor {
   id String @id @default(uuid())
   licenseNo String @unique
-  speciality String
+  specialization String
+  qualification String
   yearOfExperience Int
+  consultationFee Int
+  profileDetails String? @db.Text
 
   userId String @unique
-  user User @relation(fields: [userId], references: [id])
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  activeStatus ActiveStatus
+  activeStatus ActiveStatus @default(ACTIVE)
   appointment Appointment[]
   availability Availability[]
 
@@ -129,15 +129,14 @@ model Doctor {
 model Appointment {
   id String @id @default(uuid())
 
-  scheduledDay DateTime
-  startTime DateTime
-  endTime DateTime
-
   patientId String
   patient Patient @relation(fields: [patientId], references: [id])
 
   doctorId String
   doctor Doctor @relation(fields: [doctorId], references: [id])
+
+  startTime DateTime
+  endTime DateTime
 
   appointmentStatus AppointmentStatus @default(BOOKED)
 
@@ -147,20 +146,23 @@ model Appointment {
 
   @@index([doctorId])
   @@index([patientId])
-  @@unique([patientId, doctorId, scheduledDay, startTime, endTime])
+  @@unique([patientId, doctorId, startTime, endTime])
 }
 
 model Availability {
   id String @id @default(uuid())
 
   doctorId String
-  doctor Doctor @relation(fields: [doctorId], references: [id])
+  doctor Doctor @relation(fields: [doctorId], references: [id], onDelete: Cascade)
 
   dayOfWeek Day
-  startTime DateTime
-  endTime DateTime
+  startHour Int
+  endHour Int
 
   @@index([doctorId])
+
+  @@unique([doctorId, dayOfWeek])
+  @@unique([doctorId, dayOfWeek, startHour, endHour])
 }
 
 
