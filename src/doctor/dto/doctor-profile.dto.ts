@@ -1,6 +1,7 @@
-import { Type } from "class-transformer";
-import { IsArray, IsEnum, IsInt, IsNotEmpty, IsNumber, IsOptional, IsString, ValidateNested } from "class-validator"
+import { Transform, Type } from "class-transformer";
+import { IsArray, IsEnum, IsInt, IsNotEmpty, IsNumber, IsOptional, IsString, Max, Min, ValidateNested } from "class-validator"
 import { ActiveStatus, Day } from "src/generated/prisma/enums"
+
 
 export class AvailabilityDto {
     @IsEnum(Day)
@@ -88,4 +89,35 @@ export class UpdateProfileDto {
     @ValidateNested({ each: true})
     @Type(() => AvailabilityDto)
     availability: AvailabilityDto[];
+}
+
+export class GetDoctorsQueryDto {
+  @IsOptional()
+  @IsString()
+  specialization?: string;
+
+  @IsOptional()
+  @IsString()
+  search?: string;
+
+  @IsOptional()
+  @Transform(({ value }) => Number(value))
+  @IsInt()
+  @Min(1)
+  page = 1;
+
+  @IsOptional()
+  @Transform(({ value }) => Number(value))
+  @IsInt()
+  @Min(1)
+  @Max(100)
+  limit = 10;
+
+  @IsOptional()
+  @Transform(({ value }) => {
+    if (value === 'true') return true;
+    if (value === 'false') return false;
+    return value;
+  })
+  availability?: boolean;
 }

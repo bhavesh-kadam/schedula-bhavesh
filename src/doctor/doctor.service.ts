@@ -1,7 +1,8 @@
-import { ConflictException, ForbiddenException, Injectable, UnauthorizedException } from '@nestjs/common';
-import { Role } from 'src/generated/prisma/enums';
+import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException, UnauthorizedException } from '@nestjs/common';
+import { ActiveStatus, Role } from 'src/generated/prisma/enums';
 import { PrismaService } from 'src/prisma/prisma.service';
-import { SaveProfileDto, UpdateProfileDto } from './dto/doctor-profile.dto';
+import { GetDoctorsQueryDto, SaveProfileDto, UpdateProfileDto } from './dto/doctor-profile.dto';
+import { Prisma } from 'src/generated/prisma/client';
 
 @Injectable()
 export class DoctorService {
@@ -123,4 +124,99 @@ export class DoctorService {
         return { result, updatedAvailibility };
     }
 
+    async getDoctors ( query: GetDoctorsQueryDto) {
+        const {
+            specialization,
+            search,
+            availability,
+            page = 1,
+            limit = 10,
+        } = query;
+
+        const where: Prisma.DoctorWhereInput = {};
+
+        if (specialization) {
+            where.specialization = {
+                equals: specialization,
+                mode: 'insensitive',
+            }
+        }
+
+        if (search) {
+            where.OR = [
+                {
+                    user: {
+                        firstName: {
+                            contains: search,
+                            mode: 'insensitive',
+                        },
+                    },
+                },
+                {
+                    user: {
+                        lastName: {
+                            contains: search,
+                            mode: 'insensitive',
+                        },
+                    },
+                },
+            ];
+        }
+
+        if (availability === true) {
+            where.activeStatus = ActiveStatus.ACTIVE;
+        }
+
+        const doctor = await this.prisma.doctor.findMany({
+            where,
+            skip: (page - 1) * limit,
+            take: limit,
+            include: {
+                user: {
+                    select: {
+                        firstName: true,
+                        lastName: true,
+                    },
+                },
+            },
+        });
+
+        return doctor.map((doctor) => ({
+            doctorId: doctor.id,
+            fullName: `${doctor.user.firstName} ${doctor.user.lastName}`,
+            specialization: doctor.specialization,
+            experience: doctor.yearOfExperience,
+            consultationFee: doctor.consultationFee,
+            availabilityStatus: doctor.activeStatus === ActiveStatus.ACTIVE,
+        }));
+        
+    }
+
+    async getDoctorById (doctorId: string) {
+        const doctor = await this.prisma.doctor.findUnique({
+            where: {
+                id: doctorId,
+            },
+            select: {
+                id: true,
+                user: {
+                    select: {
+                        firstName: true,
+                        lastName: true,
+                    },
+                },
+                licenseNo: true,
+                specialization: true,
+                yearOfExperience: true,
+                consultationFee: true,
+                availability: true,
+            },
+        });
+
+        if (!doctor) {
+            throw new NotFoundException("Doctor not found");
+        }
+
+        return { doctor }
+    }
 }
