@@ -1,11 +1,11 @@
-import { Body, Controller, Get, Patch, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, ParseIntPipe, ParseUUIDPipe, Patch, Post, Query, UseGuards } from '@nestjs/common';
 import { DoctorService } from './doctor.service';
 import { AuthGuard } from 'src/auth/guards/auth.guard';
 import { RoleGuard } from 'src/auth/guards/role.guard';
 import { Roles } from 'src/common/decorators/roles.decorator';
 import { Role } from 'src/generated/prisma/enums';
 import { GetUser } from 'src/common/decorators/getUser.decorator';
-import { SaveProfileDto, UpdateProfileDto } from './dto/doctor-profile.dto';
+import { GetDoctorsQueryDto, SaveProfileDto, UpdateProfileDto } from './dto/doctor-profile.dto';
 
 interface JwtPayload {
   sub: string;
@@ -47,5 +47,19 @@ export class DoctorController {
     @Body() dto: UpdateProfileDto
   ) {
     return this.doctorService.updateDoctorProfile(dto, user.sub)
+  }
+
+  @Get()
+  async getDoctors(
+    @Query() query: GetDoctorsQueryDto
+  ) {
+    return this.doctorService.getDoctors(query)
+  }
+
+  @Get(':id')
+  async getDoctorById(
+    @Param('id', ParseUUIDPipe) doctorId: string
+  ) {
+    return this.doctorService.getDoctorById(doctorId);
   }
 }
