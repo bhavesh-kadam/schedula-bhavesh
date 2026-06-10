@@ -33,7 +33,7 @@ export class AuthService {
         }
 
         if (!process.env.ACCESS_TOKEN_SECRET && !process.env.REFRESH_TOKEN_SECRET) {
-            return console.log("cant find env variables")
+            return console.error("cant find env variables")
         }
 
         const accessToken = await this.jwt.signAsync(payload, {
@@ -62,7 +62,7 @@ export class AuthService {
         const client = tx || this.prisma;
 
         if (!process.env.HMAC_HASH) {
-            console.error ('Hmac hash not found');
+            console.error('Hmac hash not found');
         }
 
         const tokenHash = createHmac('sha256', process.env.HMAC_HASH!)
