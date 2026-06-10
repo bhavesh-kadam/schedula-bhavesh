@@ -2,6 +2,7 @@ import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
 import cookieParser from 'cookie-parser';
 import { ValidationPipe } from '@nestjs/common';
+import 'dotenv/config'
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
@@ -17,8 +18,9 @@ async function bootstrap() {
       }),
     )
     .enableCors({
-      // for react frotnend support for future
-      origin: 'http://localhost:3000',
+      // for react/next frotnend support for future
+      // origin: 'http://localhost:3000',
+      origin: true,
       credentials: true
     });
 
