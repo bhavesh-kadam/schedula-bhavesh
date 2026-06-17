@@ -8,7 +8,7 @@ import {
 import { PrismaService } from 'src/prisma/prisma.service';
 import { DoctorService } from 'src/doctor/doctor.service';
 import { BookAppointmentDto } from './dto/appointment.dto';
-import { Role, AppointmentStatus } from 'src/generated/prisma/enums';
+import { Role, AppointmentStatus, SchedulingType } from 'src/generated/prisma/enums';
 
 @Injectable()
 export class AppointmentService {
@@ -189,5 +189,114 @@ export class AppointmentService {
     }
 
     return appointments;
+  }
+
+
+  async rescheduleAppointment(appointmentId: string, userId: string, dto: BookAppointmentDto) {
+    const patient = await this.prisma.patient.findUnique({ 
+      where: { userId },
+      select: { 
+        id: true,
+        appointment: {
+          where: { id: appointmentId },
+          select: { id: true, doctorId: true, startTime: true, endTime: true, appointmentStatus: true }
+        } 
+      } 
+    }) as { 
+      id: string;
+      appointment: Array<{ id: string; doctorId: string; startTime: Date; endTime: Date; appointmentStatus: AppointmentStatus; }>;
+    } | null;
+    if (!patient) throw new NotFoundException('Patient profile not found.');
+
+    if (patient.appointment.length === 0) {
+      throw new NotFoundException('Appointment record not found for rescheduling.');
+    }
+
+    const oldAppointment = patient.appointment[0];
+
+    if (oldAppointment.appointmentStatus === AppointmentStatus.CANCELLED) {
+      throw new BadRequestException('Cannot reschedule a cancelled appointment. Please book a new one instead.');
+    }
+
+    const oldStartMs = new Date(oldAppointment.startTime).getTime();
+    const thrityMinutesInMs = 30 * 60 * 1000;
+    if (oldStartMs - Date.now() < thrityMinutesInMs) {
+      throw new BadRequestException('Rescheduling window has closed: Changes must be made at least 30 minutes before the original appointment time.');
+    }
+
+    const requestedStart = new Date(`${dto.date}T${dto.startTime}:00.000Z`);
+    const requestedEnd = new Date(`${dto.date}T${dto.endTime}:00.000Z`);
+
+    if (oldStartMs === requestedStart.getTime()) {
+      throw new BadRequestException('You already have an appointment booked for this exact time. Please choose a different slot to reschedule.');
+    }
+
+    if (requestedStart <= new Date()) {
+      throw new BadRequestException('Cannot reschedule to past dates or times. Please select a future slot.');
+    }
+
+    const doctor = await this.prisma.doctor.findUnique({ where: { id: oldAppointment.doctorId } });
+    if (!doctor) throw new NotFoundException('Associated doctor record not found for this appointment.');
+
+    const matrix = await this.doctorService.generateAndFilterSlots(oldAppointment.doctorId, dto.date);
+
+    if (doctor.schedulingType === SchedulingType.STREAM) {
+      const isValidSlot = (matrix as any).slots?.some(
+        (s: any) => new Date(s.startTime).getTime() === requestedStart.getTime()
+      );
+
+      if (!isValidSlot) {
+        const nextAvailable = (matrix as any).slots?.[0];
+        throw new BadRequestException({ 
+          message: 'Requested slot is unavailable or invalid for rescheduling.', 
+          suggestedSlot: nextAvailable ? `${nextAvailable.displayTime}`: 'No remaining slots available on this date.' });
+      }
+    } else {
+      const isValidWave = (matrix as any).waves?.some(
+        (w: any) => new Date(w.startTime).getTime() === requestedStart.getTime() && !w.isFull
+      );
+
+      if (!isValidWave) {
+        const nextAvailable = (matrix as any).waves?.find((w: any) => !w.isFull);
+        throw new BadRequestException({ 
+          message: 'Requested wave window is full or invalid for rescheduling.',
+          suggestedSlot: nextAvailable ? `${nextAvailable.wave.displayTime}`: 'No remaining wave windows available on this date.' 
+        });
+      }
+    }
+
+    return this.prisma.$transaction(async (tx) => {
+      const activeBookingOnNewSlot = await tx.appointment.findMany({
+        where: {
+          doctorId: oldAppointment.doctorId,
+          startTime: requestedStart,
+          endTime: requestedEnd,
+          appointmentStatus: { in: [AppointmentStatus.BOOKED, AppointmentStatus.RESCHEDULED] }
+        }
+      });
+
+      if (doctor.schedulingType === SchedulingType.STREAM && activeBookingOnNewSlot.length > 0) {
+        throw new ConflictException('This exact stream slot has already been booked by another patient. Please choose a different slot to reschedule.');
+      }
+
+      let nextTokenNumber: number | undefined = undefined;
+      if (doctor.schedulingType === SchedulingType.WAVE) {
+        if (activeBookingOnNewSlot.length >= doctor.maxWaveCapacity) {
+          throw new ConflictException('This wave window is entirely full. Please choose a different slot to reschedule.');
+        }
+        nextTokenNumber = activeBookingOnNewSlot.length + 1;
+      }
+
+      return tx.appointment.update({
+        where: { id: appointmentId },
+        data: { 
+          startTime: requestedStart, 
+          endTime: requestedEnd, 
+          appointmentStatus: AppointmentStatus.RESCHEDULED,
+          tokenNumber: nextTokenNumber
+        },
+      });
+    });
+
   }
 }

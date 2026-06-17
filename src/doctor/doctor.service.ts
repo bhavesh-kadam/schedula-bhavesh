@@ -268,6 +268,8 @@ async generateAndFilterSlots(doctorId: string, dateString: string, duration?: nu
                 consultationFee: dto.consultationFee,
                 yearOfExperience: dto.yearsOfExperience,
                 activeStatus: ActiveStatus.ACTIVE,
+                schedulingType: dto.schedulingType,
+                maxWaveCapacity: dto.maxWaveCapacity,
                 userId,
                 recurringAvailability: {
                     createMany: {
@@ -293,6 +295,8 @@ async generateAndFilterSlots(doctorId: string, dateString: string, duration?: nu
                 specialization: dto.specialization,
                 yearOfExperience: dto.yearsOfExperience,
                 activeStatus: dto.activeStatus,
+                schedulingType: dto.schedulingType,
+                maxWaveCapacity: dto.maxWaveCapacity,
             }
         });
 

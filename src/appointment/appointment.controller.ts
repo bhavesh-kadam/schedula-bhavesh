@@ -37,4 +37,14 @@ export class AppointmentController {
   async cancel(@Param('id') id: string, @GetUser() user: JwtPayload) {
     return this.appointmentService.cancelAppointment(id, user.sub);
   }
+
+  @Patch(':id/reschedule')
+  @Roles(Role.PATIENT)
+  async reschedule(
+    @Param('id') id: string, 
+    @GetUser() user: JwtPayload, 
+    @Body() dto: BookAppointmentDto
+  ) {
+    return this.appointmentService.rescheduleAppointment(id, user.sub, dto);
+  }
 }

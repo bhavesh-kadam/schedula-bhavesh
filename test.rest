@@ -1,0 +1,253 @@
+### ===================================================================
+### ENVIRONMENT VARIABLES & CONFIGURATION
+### ===================================================================
+@baseUrl = http://localhost:3000
+@contentType = application/json
+
+# Fresh Future Recording Date
+@testDate = 2026-07-11
+
+### ===================================================================
+### PHASE 1: FRESH SIGNUP / REGISTRATION
+### ===================================================================
+
+### 1. Create Base User Account for Doctor A (Stream)
+POST {{baseUrl}}/auth/signup
+Content-Type: {{contentType}}
+
+{
+  "firstName": "Robert",
+  "lastName": "Channing",
+  "mobileNo": "9112233445",
+  "email": "dr.channing.stream@mednet.com",
+  "password": "Please@9999",
+  "dob": "1978-11-04T00:00:00.000Z",
+  "gender": "MALE",
+  "role": "DOCTOR"
+}
+
+### 2. Create Base User Account for Doctor B (Wave)
+POST {{baseUrl}}/auth/signup
+Content-Type: {{contentType}}
+
+{
+  "firstName": "Elena",
+  "lastName": "Rostova",
+  "mobileNo": "9223344556",
+  "email": "dr.rostova.wave@mednet.com",
+  "password": "Please@9999",
+  "dob": "1988-04-19T00:00:00.000Z",
+  "gender": "FEMALE",
+  "role": "DOCTOR"
+}
+
+### 3. Create Base User Account for the Patient
+POST {{baseUrl}}/auth/signup
+Content-Type: {{contentType}}
+
+{
+  "firstName": "Marcus",
+  "lastName": "Vance",
+  "mobileNo": "9334455667",
+  "email": "marcus.vance.demo@gmail.com",
+  "password": "Please@9999",
+  "dob": "1992-09-30T00:00:00.000Z",
+  "gender": "MALE",
+  "role": "PATIENT"
+}
+
+
+
+
+### ===================================================================
+### PHASE 2: LOGIN & METADATA PROFILE ONBOARDING
+### ===================================================================
+
+### 1. Login as Doctor A (Stream)
+POST {{baseUrl}}/auth/login
+Content-Type: {{contentType}}
+
+{
+  "email": "dr.channing.stream@mednet.com",
+  "password": "Please@9999"
+}
+
+### Create Doctor A Profile Row
+# @name streamDocProfile
+POST {{baseUrl}}/doctor/profile
+Content-Type: {{contentType}}
+
+{
+  "licenseNo": "MDC-STREAM-7772",
+  "specialization": "Neurology",
+  "qualification": "MD, PhD",
+  "yearsOfExperience": 15,
+  "consultationFee": 220,
+  "schedulingType": "STREAM",
+  "bufferTime": 0,
+  "availability": [
+    {
+      "dayOfWeek": "SATURDAY",
+      "startTime": "10:00",
+      "endTime": "13:00"
+    }
+  ]
+}
+
+### Extract Doctor A Profile ID
+@streamDocId = {{streamDocProfile.response.body.result.id}}
+
+
+### 2. Login as Doctor B (Wave)
+POST {{baseUrl}}/auth/login
+Content-Type: {{contentType}}
+
+{
+  "email": "dr.rostova.wave@mednet.com",
+  "password": "Please@9999"
+}
+
+### Create Doctor B Profile Row
+# @name waveDocProfile
+POST {{baseUrl}}/doctor/profile
+Content-Type: {{contentType}}
+
+{
+  "licenseNo": "MDC-WAVE-3341",
+  "specialization": "Dermatology",
+  "qualification": "MD, DNB",
+  "yearsOfExperience": 9,
+  "consultationFee": 130,
+  "schedulingType": "WAVE",
+  "maxWaveCapacity": 1, 
+  "availability": [
+    {
+      "dayOfWeek": "SATURDAY",
+      "startTime": "11:00",
+      "endTime": "12:00"
+    },
+    {
+      "dayOfWeek": "SATURDAY",
+      "startTime": "12:00",
+      "endTime": "13:00"
+    }
+  ]
+}
+
+### Extract Doctor B Profile ID
+@waveDocId = {{waveDocProfile.response.body.result.id}}
+
+
+### 3. Login as Patient
+POST {{baseUrl}}/auth/login
+Content-Type: {{contentType}}
+
+{
+  "email": "marcus.vance.demo@gmail.com",
+  "password": "Please@9999"
+}
+
+### Create Patient Profile Row
+POST {{baseUrl}}/patient/profile
+Content-Type: {{contentType}}
+
+{
+  "bloodGroup": "A_POSITIVE",
+  "pastIllness": "Asthma"
+}
+
+
+
+
+### ===================================================================
+### PHASE 3: RUN INITIAL APPOINTMENT BOOKINGS
+### ===================================================================
+
+### Book Initial Stream Appointment (10:00 - 10:15)
+# @name initialStreamAppointment
+POST {{baseUrl}}/appointment
+Content-Type: {{contentType}}
+
+{
+  "doctorId": "{{streamDocId}}",
+  "date": "{{testDate}}",
+  "startTime": "10:00",
+  "endTime": "10:15"
+}
+
+### Capture Stream Appt ID
+@streamApptId = {{initialStreamAppointment.response.body.id}}
+
+
+### Book Initial Wave Appointment (11:00 - 12:00)
+# @name initialWaveAppointment
+POST {{baseUrl}}/appointment
+Content-Type: {{contentType}}
+
+{
+  "doctorId": "{{waveDocId}}",
+  "date": "{{testDate}}",
+  "startTime": "11:00",
+  "endTime": "12:00"
+}
+
+### Capture Wave Appt ID
+@waveApptId = {{initialWaveAppointment.response.body.id}}
+
+
+---
+
+### ===================================================================
+### PHASE 4: RESCHEDULING & EDGE CASE TESTING
+### ===================================================================
+
+### ─── CASE A: STREAM RESCHEDULE (EXPECTED TO PASS) ───
+### Shifts the active 10:00 AM slot to the open 10:15 AM slot.
+PATCH {{baseUrl}}/appointment/{{streamApptId}}/reschedule
+Content-Type: {{contentType}}
+
+{
+  "doctorId": "{{streamDocId}}",
+  "date": "{{testDate}}",
+  "startTime": "10:15",
+  "endTime": "10:30"
+}
+
+
+### ─── CASE B: STREAM RESCHEDULE (EXPECTED TO GRACEFULLY FAIL) ───
+### Targets a historical date window to violate the past-time constraint.
+PATCH {{baseUrl}}/appointment/{{streamApptId}}/reschedule
+Content-Type: {{contentType}}
+
+{
+  "doctorId": "{{streamDocId}}",
+  "date": "2021-05-12",
+  "startTime": "10:00",
+  "endTime": "10:15"
+}
+
+
+### ─── CASE C: WAVE RESCHEDULE (EXPECTED TO PASS) ───
+### Shifts out of the filled 11:00 AM wave window into the open 12:00 PM wave window.
+PATCH {{baseUrl}}/appointment/{{waveApptId}}/reschedule
+Content-Type: {{contentType}}
+
+{
+  "doctorId": "{{waveDocId}}",
+  "date": "{{testDate}}",
+  "startTime": "12:00",
+  "endTime": "13:00"
+}
+
+
+### ─── CASE D: WAVE RESCHEDULE (EXPECTED TO GRACEFULLY FAIL) ───
+### Tries to shift back into the 11:00 AM wave block which hit its capacity ceiling (maxWaveCapacity: 1).
+PATCH {{baseUrl}}/appointment/{{waveApptId}}/reschedule
+Content-Type: {{contentType}}
+
+{
+  "doctorId": "{{waveDocId}}",
+  "date": "{{testDate}}",
+  "startTime": "11:00",
+  "endTime": "12:00"
+}
