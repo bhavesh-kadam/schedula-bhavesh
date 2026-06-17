@@ -9,11 +9,6 @@ generator client {
   moduleFormat = "cjs"
 }
 
-generator erd {
-  provider = "prisma-erd-generator"
-  output = "../ERD.svg"
-}
-
 datasource db {
   provider = "postgresql"
 }
@@ -62,6 +57,16 @@ enum Day {
   FRIDAY
   SATURDAY
   SUNDAY
+}
+
+enum OverrideType {
+  MODIFIED
+  UNAVAILABLE
+}
+
+enum SchedulingType {
+  STREAM
+  WAVE
 }
 
 model User {
@@ -113,12 +118,18 @@ model Doctor {
   consultationFee Int
   profileDetails String? @db.Text
 
+  schedulingType   SchedulingType @default(STREAM)
+  slotDuration     Int            @default(15) // Used for STREAM
+  bufferTime       Int            @default(0)  // Used for STREAM (in minutes)
+  maxWaveCapacity  Int            @default(5)  // Used for WAVE
+
   userId String @unique
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   activeStatus ActiveStatus @default(ACTIVE)
   appointment Appointment[]
-  availability Availability[]
+  recurringAvailability RecurringAvailability[]
+  customAvailability    CustomAvailability[]
 
   updatedAt DateTime @updatedAt
   deletedAt DateTime?
@@ -138,6 +149,8 @@ model Appointment {
   startTime DateTime
   endTime DateTime
 
+  tokenNumber Int?
+
   appointmentStatus AppointmentStatus @default(BOOKED)
 
   createdAt DateTime @default(now())
@@ -149,20 +162,39 @@ model Appointment {
   @@unique([patientId, doctorId, startTime, endTime])
 }
 
-model Availability {
-  id String @id @default(uuid())
-
+model RecurringAvailability {
+  id       String @id @default(uuid())
   doctorId String
-  doctor Doctor @relation(fields: [doctorId], references: [id], onDelete: Cascade)
+  doctor   Doctor @relation(fields: [doctorId], references: [id], onDelete: Cascade)
 
   dayOfWeek Day
-  startHour Int
-  endHour Int
+  startTime String // E.g., "10:00" (HH:mm format makes time-overlap math easy)
+  endTime   String // E.g., "13:00"
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@index([doctorId])
+  @@index([dayOfWeek])
+}
 
-  @@unique([doctorId, dayOfWeek])
-  @@unique([doctorId, dayOfWeek, startHour, endHour])
+model CustomAvailability {
+  id       String @id @default(uuid())
+  doctorId String
+  doctor   Doctor @relation(fields: [doctorId], references: [id], onDelete: Cascade)
+
+  date         DateTime     // The specific date (e.g., 2026-06-15)
+  overrideType OverrideType @default(MODIFIED)
+  
+  // Optional times: If overrideType is UNAVAILABLE, these can be null
+  startTime    DateTime?    
+  endTime      DateTime?    
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([doctorId])
+  @@index([date])
 }
 
 
@@ -191,7 +223,6 @@ model RefreshToken {
   createdAt DateTime @default(now())
   revokedAt DateTime?
 }
-
 
 
 

@@ -1,5 +1,5 @@
 import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException, UnauthorizedException } from '@nestjs/common';
-import { ActiveStatus, Role, Day, OverrideType } from 'src/generated/prisma/enums';
+import { ActiveStatus, Role, Day, OverrideType, SchedulingType } from 'src/generated/prisma/enums';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { GetDoctorsQueryDto, SaveProfileDto, UpdateProfileDto, RecurringAvailabilityDto, CustomAvailabilityDto } from './dto/doctor-profile.dto';
 import { Prisma } from 'src/generated/prisma/client';
@@ -63,134 +63,172 @@ private sliceTimeIntoSlots(startTimeStr: string, endTimeStr: string, durationMin
     return slots;
 }
 
-async generateAndFilterSlots(doctorId: string, dateString: string, duration: number) {
-    // 1. Verify Doctor Existence
-    const doctorExists = await this.prisma.doctor.findUnique({
-        where: { id: doctorId }
+// Replace or update your existing generateAndFilterSlots method with this:
+async generateAndFilterSlots(doctorId: string, dateString: string, duration?: number) {
+    // 1. Verify Doctor Existence & pull Strategy Configurations
+    const doctor = await this.prisma.doctor.findUnique({
+      where: { id: doctorId }
     });
-    if (!doctorExists) {
-        throw new NotFoundException("Doctor not found");
+    if (!doctor) {
+      throw new NotFoundException("Doctor not found");
     }
 
     // 2. Validate Target Date Boundaries
     const targetDate = new Date(dateString);
     if (isNaN(targetDate.getTime())) {
-        throw new BadRequestException("Invalid date format provided");
+      throw new BadRequestException("Invalid date format provided");
     }
 
     const todayString = new Date().toISOString().split('T')[0];
     if (dateString < todayString) {
-        throw new BadRequestException("Cannot check slots for a past calendar date");
+      throw new BadRequestException("Cannot check slots for a past calendar date");
     }
 
-    // Capture precise system time context for parsing future-only availability
     const systemNow = new Date();
-
     let baselineWindows: { startTime: string; endTime: string }[] = [];
 
     // 3. Resolve Availability Matrix (Custom Override priority over Weekly Recurring)
     const customOverrides = await this.prisma.customAvailability.findMany({
-        where: { doctorId, date: new Date(dateString) }
+      where: { doctorId, date: new Date(dateString) }
     });
 
     if (customOverrides.length > 0) {
-        const blockedDay = customOverrides.find(o => o.overrideType === OverrideType.UNAVAILABLE);
-        if (blockedDay) {
-            throw new BadRequestException("The doctor has declared themselves unavailable on this selected date");
-        }
+      const blockedDay = customOverrides.find(o => o.overrideType === OverrideType.UNAVAILABLE);
+      if (blockedDay) {
+        throw new BadRequestException("The doctor has declared themselves unavailable on this selected date");
+      }
 
-        const validCustomOverrides = customOverrides.filter(
-            (o): o is typeof customOverrides[number] & { startTime: Date; endTime: Date } =>
-                o.startTime !== null && o.endTime !== null
-        );
+      const validCustomOverrides = customOverrides.filter(
+        (o): o is typeof customOverrides[number] & { startTime: Date; endTime: Date } =>
+          o.startTime !== null && o.endTime !== null
+      );
 
-        baselineWindows = validCustomOverrides.map(o => {
-            const sIso = o.startTime.toISOString();
-            const eIso = o.endTime.toISOString();
-            return {
-                startTime: sIso.substring(11, 16), // Extract "HH:mm" from raw database timestamp
-                endTime: eIso.substring(11, 16)
-            };
-        });
-    } else {
-        // Fall back to mapping calendar dates back into active Day-of-Week enums
-        const daysMapping: Record<number, Day> = {
-            0: Day.SUNDAY, 1: Day.MONDAY, 2: Day.TUESDAY, 
-            3: Day.WEDNESDAY, 4: Day.THURSDAY, 5: Day.FRIDAY, 6: Day.SATURDAY
+      baselineWindows = validCustomOverrides.map(o => {
+        const sIso = o.startTime.toISOString();
+        const eIso = o.endTime.toISOString();
+        return {
+          startTime: sIso.substring(11, 16),
+          endTime: eIso.substring(11, 16)
         };
-        const targetDayOfWeek = daysMapping[targetDate.getUTCDay()];
+      });
+    } else {
+      const daysMapping: Record<number, Day> = {
+        0: Day.SUNDAY, 1: Day.MONDAY, 2: Day.TUESDAY, 
+        3: Day.WEDNESDAY, 4: Day.THURSDAY, 5: Day.FRIDAY, 6: Day.SATURDAY
+      };
+      const targetDayOfWeek = daysMapping[targetDate.getUTCDay()];
 
-        const recurringWindows = await this.prisma.recurringAvailability.findMany({
-            where: { doctorId, dayOfWeek: targetDayOfWeek }
-        });
+      const recurringWindows = await this.prisma.recurringAvailability.findMany({
+        where: { doctorId, dayOfWeek: targetDayOfWeek }
+      });
 
-        baselineWindows = recurringWindows.map(r => ({
-            startTime: r.startTime,
-            endTime: r.endTime
-        }));
+      baselineWindows = recurringWindows.map(r => ({
+        startTime: r.startTime,
+        endTime: r.endTime
+      }));
     }
 
     if (baselineWindows.length === 0) {
-        return { date: dateString, slots: [], message: "No operational availability scheduled for this date" };
+      return { 
+        date: dateString, 
+        schedulingType: doctor.schedulingType,
+        slots: [], 
+        waves: [], 
+        message: "No operational availability scheduled for this date" 
+      };
     }
 
-    // 4. Transform Scheduled Windows Into Raw Interval Blocks
-    let rawGeneratedSlots: { start: Date; end: Date }[] = [];
-    for (const window of baselineWindows) {
-        const sliced = this.sliceTimeIntoSlots(window.startTime, window.endTime, duration, dateString);
-        rawGeneratedSlots = [...rawGeneratedSlots, ...sliced];
-    }
-
-    // 5. Gather Active Appointments to Filter Out Already Booked Slots
-    // 5. Gather Active Appointments to Filter Out Already Booked Slots
+    // 4. Gather Active Bookings
     const dayStart = new Date(`${dateString}T00:00:00.000Z`);
     const dayEnd = new Date(`${dateString}T23:59:59.999Z`);
 
     const existingAppointments = await this.prisma.appointment.findMany({
-        where: {
-            doctorId,
-            appointmentStatus: { in: ['BOOKED', 'RESCHEDULED', 'COMPLETED'] },
-            // Filter appointments that occur within the target date
-            startTime: {
-                gte: dayStart,
-                lte: dayEnd
-            }
-        },
-        select: { startTime: true, endTime: true }
+      where: {
+        doctorId,
+        appointmentStatus: { in: ['BOOKED', 'RESCHEDULED', 'COMPLETED'] },
+        startTime: { gte: dayStart, lte: dayEnd }
+      },
+      select: { startTime: true, endTime: true, patientId: true }
     });
 
-    // 6. Execute Filtration Matrix (Strip Past Windows & Booked Slots)
-    const bookableSlots = rawGeneratedSlots.filter(slot => {
-        // Check 1: Ensure slot is strictly in the future relative to the system clock
-        if (slot.start.getTime() <= systemNow.getTime()) {
-            return false;
-        }
+    // --- 5. EXECUTE BRANCHING STRATEGY SELECTION (STREAM VS WAVE) ---
 
-        // Check 2: Confirm slot does not collide with an active appointment segment
+    if (doctor.schedulingType === SchedulingType.STREAM) {
+      const slotDuration = duration || doctor.slotDuration;
+      if (slotDuration <= 0) throw new BadRequestException('Invalid configurations: duration must be positive');
+      
+      let rawGeneratedSlots: { start: Date; end: Date }[] = [];
+
+      for (const window of baselineWindows) {
+        const startBasetime = new Date(`${dateString}T${window.startTime}:00Z`);
+        const endBasetime = new Date(`${dateString}T${window.endTime}:00Z`);
+        let currentTrack = new Date(startBasetime.getTime());
+
+        while (currentTrack.getTime() + slotDuration * 60000 <= endBasetime.getTime()) {
+          const nextTrack = new Date(currentTrack.getTime() + slotDuration * 60000);
+          rawGeneratedSlots.push({ start: new Date(currentTrack), end: nextTrack });
+          
+          currentTrack = new Date(nextTrack.getTime() + doctor.bufferTime * 60000);
+        }
+      }
+
+      const bookableSlots = rawGeneratedSlots.filter(slot => {
+        if (slot.start.getTime() <= systemNow.getTime()) return false;
+
         const isCollision = existingAppointments.some(appt => {
-            const apptStart = new Date(appt.startTime).getTime();
-            const apptEnd = new Date(appt.endTime).getTime();
-            const slotStart = slot.start.getTime();
-            const slotEnd = slot.end.getTime();
-            
-            // Overlap boundary condition logic
-            return slotStart < apptEnd && slotEnd > apptStart;
+          const apptStart = new Date(appt.startTime).getTime();
+          const apptEnd = new Date(appt.endTime).getTime();
+          return slot.start.getTime() < apptEnd && slot.end.getTime() > apptStart;
         });
 
         return !isCollision;
-    });
+      });
 
-    return {
+      return {
         date: dateString,
-        configDurationMinutes: duration,
+        schedulingType: SchedulingType.STREAM,
+        configDurationMinutes: slotDuration,
+        bufferTimeMinutes: doctor.bufferTime,
         totalAvailableSlots: bookableSlots.length,
         slots: bookableSlots.map(s => ({
-            startTime: s.start.toISOString(),
-            endTime: s.end.toISOString(),
-            displayTime: `${s.start.toISOString().substring(11, 16)} - ${s.end.toISOString().substring(11, 16)}`
+          startTime: s.start.toISOString(),
+          endTime: s.end.toISOString(),
+          displayTime: `${s.start.toISOString().substring(11, 16)} - ${s.end.toISOString().substring(11, 16)}`
         }))
-    };
-}
+      };
+
+    } else {
+      // --- WAVE SELECTION ECOSYSTEM ---
+      if (doctor.maxWaveCapacity <= 0) throw new BadRequestException('Invalid wave capacity configuration');
+
+      const bookableWaves = baselineWindows.map(window => {
+        const waveStart = new Date(`${dateString}T${window.startTime}:00.000Z`);
+        const waveEnd = new Date(`${dateString}T${window.endTime}:00.000Z`);
+
+        const waveBookings = existingAppointments.filter(appt => 
+          new Date(appt.startTime).getTime() === waveStart.getTime() &&
+          new Date(appt.endTime).getTime() === waveEnd.getTime()
+        );
+
+        return {
+          startTime: waveStart.toISOString(),
+          endTime: waveEnd.toISOString(),
+          displayTime: `${window.startTime} - ${window.endTime}`,
+          maxCapacity: doctor.maxWaveCapacity,
+          bookedCount: waveBookings.length,
+          availableSlots: Math.max(0, doctor.maxWaveCapacity - waveBookings.length),
+          isFull: waveBookings.length >= doctor.maxWaveCapacity
+        };
+      }).filter(w => new Date(w.startTime).getTime() > systemNow.getTime());
+
+      return {
+        date: dateString,
+        schedulingType: SchedulingType.WAVE,
+        totalAvailableWaves: bookableWaves.length,
+        waves: bookableWaves
+      };
+    }
+  }
 
     // --- PROFILE CORE METHODS ---
 
