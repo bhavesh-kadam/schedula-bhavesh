@@ -416,7 +416,6 @@ async generateAndFilterSlots(doctorId: string, dateString: string, duration: num
             where: { doctorId, dayOfWeek: targetDayOfWeek },
             orderBy: { startTime: 'asc' }
         });
-    }
 
         return {
             date: dateString,
