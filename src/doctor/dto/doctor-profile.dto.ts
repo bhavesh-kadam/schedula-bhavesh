@@ -138,3 +138,15 @@ export class GetDoctorsQueryDto {
     })
     availability?: boolean;
 }
+
+export class GetSlotsQueryDto {
+    @IsNotEmpty()
+    @IsDateString()
+    date: string; // Format: YYYY-MM-DD
+
+    @IsOptional()
+    @Transform(({ value }) => Number(value))
+    @IsInt()
+    @IsEnum([10, 15, 30, 60], { message: 'Duration must be either 10, 15, 30, or 60 minutes' })
+    duration = 30; // Default slot duration to 30 minutes if not provided
+}

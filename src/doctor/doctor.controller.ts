@@ -5,7 +5,7 @@ import { RoleGuard } from 'src/auth/guards/role.guard';
 import { Roles } from 'src/common/decorators/roles.decorator';
 import { Role } from 'src/generated/prisma/enums';
 import { GetUser } from 'src/common/decorators/getUser.decorator';
-import { GetDoctorsQueryDto, SaveProfileDto, UpdateProfileDto, RecurringAvailabilityDto, CustomAvailabilityDto } from './dto/doctor-profile.dto';
+import { GetDoctorsQueryDto, SaveProfileDto, UpdateProfileDto, RecurringAvailabilityDto, CustomAvailabilityDto, GetSlotsQueryDto } from './dto/doctor-profile.dto';
 
 interface JwtPayload {
   sub: string;
@@ -98,5 +98,13 @@ export class DoctorController {
   @Get(':id')
   async getDoctorById(@Param('id', ParseUUIDPipe) doctorId: string) {
     return this.doctorService.getDoctorById(doctorId);
+  }
+
+  @Get(':id/slots')
+  async getDoctorSlots(
+    @Param('id', ParseUUIDPipe) doctorId: string,
+    @Query() query: GetSlotsQueryDto
+  ) {
+    return this.doctorService.generateAndFilterSlots(doctorId, query.date, query.duration);
   }
 }

@@ -38,6 +38,160 @@ export class DoctorService {
         return doctor;
     }
 
+    /**
+ * Core dynamic chunk generator that converts a start and end window into discrete booking slots.
+ * Accounts for shifting string-based times and full standard JS Dates safely.
+ */
+private sliceTimeIntoSlots(startTimeStr: string, endTimeStr: string, durationMinutes: number, targetDateStr: string): { start: Date; end: Date }[] {
+    const slots: { start: Date; end: Date }[] = [];
+    
+    // Construct real comparison baseline dates using the targeted calendar date
+    const startBasetime = new Date(`${targetDateStr}T${startTimeStr}:00Z`);
+    const endBasetime = new Date(`${targetDateStr}T${endTimeStr}:00Z`);
+
+    let currentTrack = new Date(startBasetime.getTime());
+
+    while (currentTrack.getTime() + durationMinutes * 60000 <= endBasetime.getTime()) {
+        const nextTrack = new Date(currentTrack.getTime() + durationMinutes * 60000);
+        slots.push({
+            start: new Date(currentTrack),
+            end: nextTrack
+        });
+        currentTrack = nextTrack;
+    }
+
+    return slots;
+}
+
+async generateAndFilterSlots(doctorId: string, dateString: string, duration: number) {
+    // 1. Verify Doctor Existence
+    const doctorExists = await this.prisma.doctor.findUnique({
+        where: { id: doctorId }
+    });
+    if (!doctorExists) {
+        throw new NotFoundException("Doctor not found");
+    }
+
+    // 2. Validate Target Date Boundaries
+    const targetDate = new Date(dateString);
+    if (isNaN(targetDate.getTime())) {
+        throw new BadRequestException("Invalid date format provided");
+    }
+
+    const todayString = new Date().toISOString().split('T')[0];
+    if (dateString < todayString) {
+        throw new BadRequestException("Cannot check slots for a past calendar date");
+    }
+
+    // Capture precise system time context for parsing future-only availability
+    const systemNow = new Date();
+
+    let baselineWindows: { startTime: string; endTime: string }[] = [];
+
+    // 3. Resolve Availability Matrix (Custom Override priority over Weekly Recurring)
+    const customOverrides = await this.prisma.customAvailability.findMany({
+        where: { doctorId, date: new Date(dateString) }
+    });
+
+    if (customOverrides.length > 0) {
+        const blockedDay = customOverrides.find(o => o.overrideType === OverrideType.UNAVAILABLE);
+        if (blockedDay) {
+            throw new BadRequestException("The doctor has declared themselves unavailable on this selected date");
+        }
+
+        const validCustomOverrides = customOverrides.filter(
+            (o): o is typeof customOverrides[number] & { startTime: Date; endTime: Date } =>
+                o.startTime !== null && o.endTime !== null
+        );
+
+        baselineWindows = validCustomOverrides.map(o => {
+            const sIso = o.startTime.toISOString();
+            const eIso = o.endTime.toISOString();
+            return {
+                startTime: sIso.substring(11, 16), // Extract "HH:mm" from raw database timestamp
+                endTime: eIso.substring(11, 16)
+            };
+        });
+    } else {
+        // Fall back to mapping calendar dates back into active Day-of-Week enums
+        const daysMapping: Record<number, Day> = {
+            0: Day.SUNDAY, 1: Day.MONDAY, 2: Day.TUESDAY, 
+            3: Day.WEDNESDAY, 4: Day.THURSDAY, 5: Day.FRIDAY, 6: Day.SATURDAY
+        };
+        const targetDayOfWeek = daysMapping[targetDate.getUTCDay()];
+
+        const recurringWindows = await this.prisma.recurringAvailability.findMany({
+            where: { doctorId, dayOfWeek: targetDayOfWeek }
+        });
+
+        baselineWindows = recurringWindows.map(r => ({
+            startTime: r.startTime,
+            endTime: r.endTime
+        }));
+    }
+
+    if (baselineWindows.length === 0) {
+        return { date: dateString, slots: [], message: "No operational availability scheduled for this date" };
+    }
+
+    // 4. Transform Scheduled Windows Into Raw Interval Blocks
+    let rawGeneratedSlots: { start: Date; end: Date }[] = [];
+    for (const window of baselineWindows) {
+        const sliced = this.sliceTimeIntoSlots(window.startTime, window.endTime, duration, dateString);
+        rawGeneratedSlots = [...rawGeneratedSlots, ...sliced];
+    }
+
+    // 5. Gather Active Appointments to Filter Out Already Booked Slots
+    // 5. Gather Active Appointments to Filter Out Already Booked Slots
+    const dayStart = new Date(`${dateString}T00:00:00.000Z`);
+    const dayEnd = new Date(`${dateString}T23:59:59.999Z`);
+
+    const existingAppointments = await this.prisma.appointment.findMany({
+        where: {
+            doctorId,
+            appointmentStatus: { in: ['BOOKED', 'RESCHEDULED', 'COMPLETED'] },
+            // Filter appointments that occur within the target date
+            startTime: {
+                gte: dayStart,
+                lte: dayEnd
+            }
+        },
+        select: { startTime: true, endTime: true }
+    });
+
+    // 6. Execute Filtration Matrix (Strip Past Windows & Booked Slots)
+    const bookableSlots = rawGeneratedSlots.filter(slot => {
+        // Check 1: Ensure slot is strictly in the future relative to the system clock
+        if (slot.start.getTime() <= systemNow.getTime()) {
+            return false;
+        }
+
+        // Check 2: Confirm slot does not collide with an active appointment segment
+        const isCollision = existingAppointments.some(appt => {
+            const apptStart = new Date(appt.startTime).getTime();
+            const apptEnd = new Date(appt.endTime).getTime();
+            const slotStart = slot.start.getTime();
+            const slotEnd = slot.end.getTime();
+            
+            // Overlap boundary condition logic
+            return slotStart < apptEnd && slotEnd > apptStart;
+        });
+
+        return !isCollision;
+    });
+
+    return {
+        date: dateString,
+        configDurationMinutes: duration,
+        totalAvailableSlots: bookableSlots.length,
+        slots: bookableSlots.map(s => ({
+            startTime: s.start.toISOString(),
+            endTime: s.end.toISOString(),
+            displayTime: `${s.start.toISOString().substring(11, 16)} - ${s.end.toISOString().substring(11, 16)}`
+        }))
+    };
+}
+
     // --- PROFILE CORE METHODS ---
 
     async fetchDoctorProfile (userId: string) {
@@ -73,8 +227,8 @@ export class DoctorService {
                 licenseNo: dto.licenseNo,
                 specialization: dto.specialization,
                 qualification: dto.qualification,
-                yearOfExperience: dto.yearsOfExperience,
                 consultationFee: dto.consultationFee,
+                yearOfExperience: dto.yearsOfExperience,
                 activeStatus: ActiveStatus.ACTIVE,
                 userId,
                 recurringAvailability: {
@@ -262,6 +416,7 @@ export class DoctorService {
             where: { doctorId, dayOfWeek: targetDayOfWeek },
             orderBy: { startTime: 'asc' }
         });
+    }
 
         return {
             date: dateString,
