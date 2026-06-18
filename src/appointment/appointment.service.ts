@@ -19,72 +19,87 @@ export class AppointmentService {
 
   // 1. Book Appointment
   async bookAppointment(userId: string, dto: BookAppointmentDto) {
+  const patient = await this.prisma.patient.findUnique({ where: { userId } });
+  if (!patient) throw new NotFoundException('Patient record not found.');
 
-    // Resolve internal Patient record from the logged-in User ID
-    const patient = await this.prisma.patient.findUnique({ where: { userId } });
-    if (!patient) {
-      throw new NotFoundException('Patient sub-profile record not found for this account.');
-    }
+  const doctor = await this.prisma.doctor.findUnique({ where: { id: dto.doctorId } });
+  if (!doctor) throw new NotFoundException('Doctor record not found.');
 
-    // Rule: Appointment should be for a future date/time
-    const systemNow = new Date();
-    const requestedStart = new Date(`${dto.date}T${dto.startTime}:00.000Z`);
-    const requestedEnd = new Date(`${dto.date}T${dto.endTime}:00.000Z`);
+  const requestedStart = new Date(`${dto.date}T${dto.startTime}:00.000Z`);
+  const requestedEnd = new Date(`${dto.date}T${dto.endTime}:00.000Z`);
 
-    if (requestedStart <= systemNow) {
-      throw new BadRequestException('Validation Failed: Cannot book appointments for past dates or times.');
-    }
+  if (requestedStart <= new Date()) {
+    throw new BadRequestException('Cannot book appointments for past dates or times.');
+  }
 
-    // Rule: Doctor should exist
-    const doctorExists = await this.prisma.doctor.findUnique({ where: { id: dto.doctorId } });
-    if (!doctorExists) {
-      throw new NotFoundException('Doctor record not found.');
-    }
-
-    // Calculate dynamic duration in minutes directly from the payload times
-    const durationMinutes = (requestedEnd.getTime() - requestedStart.getTime()) / 60000;
-
-    // 3. Pass calculated window width straight into your generator matrix
-    const availabilityMatrix = await this.doctorService.generateAndFilterSlots(
-    dto.doctorId, 
-    dto.date, 
-    durationMinutes // Automatically evaluates matrix based on user's exact requested time block
+  // Reuse slot matrix logic to make sure the time block matches operational hours
+  const matrix = await this.doctorService.generateAndFilterSlots(dto.doctorId, dto.date);
+  
+  if (doctor.schedulingType === 'STREAM') {
+    const isValidSlot = (matrix as any).slots?.some(
+      (s: any) => new Date(s.startTime).getTime() === requestedStart.getTime()
     );
-    // Rule: Slot should exist and be available inside our generated matrix
-    const isSlotValidAndFree = availabilityMatrix.slots.some(
-      (slot: {startTime: string, endTime: string, displayTime: string}) => 
-        new Date(slot.startTime).getTime() === requestedStart.getTime()
+    if (!isValidSlot) throw new BadRequestException('Requested slot is unavailable or invalid.');
+  } else {
+    const isValidWave = (matrix as any).waves?.some(
+      (w: any) => new Date(w.startTime).getTime() === requestedStart.getTime() && !w.isFull
     );
+    if (!isValidWave) throw new BadRequestException('Requested wave window is full or invalid.');
+  }
 
-    if (!isSlotValidAndFree) {
-      throw new ConflictException('The requested slot is either unavailable, occupied, or outside operational hours.');
-    }
+  // Execution Isolation Transaction Block
+  return this.prisma.$transaction(async (tx) => {
+    const activeBookings = await tx.appointment.findMany({
+      where: {
+        doctorId: dto.doctorId,
+        startTime: requestedStart,
+        endTime: requestedEnd,
+        appointmentStatus: { in: ['BOOKED', 'RESCHEDULED'] }
+      }
+    });
 
-    // Rule: Same slot should not be booked twice (Race Condition Check via Transaction)
-    return this.prisma.$transaction(async (tx) => {
-      const activeCollision = await tx.appointment.findFirst({
-        where: {
-          doctorId: dto.doctorId,
-          startTime: requestedStart,
-          appointmentStatus: { in: [AppointmentStatus.BOOKED, AppointmentStatus.RESCHEDULED] },
-        },
-      });
-
-      if (activeCollision) {
-        throw new ConflictException('Slot concurrency exception: This slot was just secured by another patient.');
+    if (doctor.schedulingType === 'STREAM') {
+      if (activeBookings.length > 0) {
+        throw new ConflictException('This exact stream slot has already been booked.');
       }
 
       return tx.appointment.create({
         data: {
-          patientId: patient.id, // Links to Patient UUID
-          doctorId: dto.doctorId, // Links to Doctor UUID
+          patientId: patient.id,
+          doctorId: dto.doctorId,
           startTime: requestedStart,
           endTime: requestedEnd,
-          appointmentStatus: AppointmentStatus.BOOKED,
-        },
+          appointmentStatus: 'BOOKED'
+        }
       });
-    });
-  }
+
+    } else {
+      // --- WAVE CAP AND AUTO-TOKEN ASSIGNMENT ---
+      if (activeBookings.length >= doctor.maxWaveCapacity) {
+        throw new ConflictException('This wave window is entirely full.');
+      }
+
+      const isAlreadyInWave = activeBookings.some(b => b.patientId === patient.id);
+      if (isAlreadyInWave) {
+        throw new BadRequestException('Duplicate protection: You already have a token inside this wave block.');
+      }
+
+      // Assign sequential token position based on the current order array width
+      const nextTokenNumber = activeBookings.length + 1;
+
+      return tx.appointment.create({
+        data: {
+          patientId: patient.id,
+          doctorId: dto.doctorId,
+          startTime: requestedStart,
+          endTime: requestedEnd,
+          appointmentStatus: 'BOOKED',
+          tokenNumber: nextTokenNumber // 👈 Injects Token ID safely
+        }
+      });
+    }
+  });
+}
 
   // 2. Patient Appointment View
   async getPatientAppointments(userId: string) {

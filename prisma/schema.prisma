@@ -64,6 +64,11 @@ enum OverrideType {
   UNAVAILABLE
 }
 
+enum SchedulingType {
+  STREAM
+  WAVE
+}
+
 model User {
   id String @id @default(uuid())
   firstName String
@@ -113,6 +118,11 @@ model Doctor {
   consultationFee Int
   profileDetails String? @db.Text
 
+  schedulingType   SchedulingType @default(STREAM)
+  slotDuration     Int            @default(15) // Used for STREAM
+  bufferTime       Int            @default(0)  // Used for STREAM (in minutes)
+  maxWaveCapacity  Int            @default(5)  // Used for WAVE
+
   userId String @unique
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
@@ -138,6 +148,8 @@ model Appointment {
 
   startTime DateTime
   endTime DateTime
+
+  tokenNumber Int?
 
   appointmentStatus AppointmentStatus @default(BOOKED)
 
@@ -211,7 +223,6 @@ model RefreshToken {
   createdAt DateTime @default(now())
   revokedAt DateTime?
 }
-
 
 
 
