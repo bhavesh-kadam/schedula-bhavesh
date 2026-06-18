@@ -82,4 +82,5 @@ BASE_URL="http://localhost:3000"
 ## 🔗 Delivery & API Assets
 
 - **Live Server URL:** https://schedula-bhavesh.onrender.com/
+- **Postman API collection:** https://kadambhavesh700-1551830.postman.co/workspace/Bhavesh-Kadam's-Workspace~ce20867b-58e7-4848-8c0e-d6ad319aa38e/run/55980064-cbb61368-9d1e-4601-bc89-ff4f024e2f81
 
