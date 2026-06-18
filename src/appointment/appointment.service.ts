@@ -1,21 +1,21 @@
-import { 
-  Injectable, 
-  NotFoundException, 
-  BadRequestException, 
-  ConflictException, 
-  ForbiddenException 
+import {
+  Injectable,
+  NotFoundException,
+  BadRequestException,
+  ConflictException,
+  ForbiddenException
 } from '@nestjs/common';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { DoctorService } from 'src/doctor/doctor.service';
 import { BookAppointmentDto } from './dto/appointment.dto';
-import { Role, AppointmentStatus, SchedulingType } from 'src/generated/prisma/enums';
+import { Role, AppointmentStatus, SchedulingType, Gender } from 'src/generated/prisma/enums';
 
 @Injectable()
 export class AppointmentService {
   constructor(
     private prisma: PrismaService,
     private doctorService: DoctorService,
-  ) {}
+  ) { }
 
   // 1. Book Appointment
   async bookAppointment(userId: string, dto: BookAppointmentDto) {
@@ -32,34 +32,85 @@ export class AppointmentService {
     throw new BadRequestException('Cannot book appointments for past dates or times.');
   }
 
-  // Reuse slot matrix logic to make sure the time block matches operational hours
   const matrix = await this.doctorService.generateAndFilterSlots(dto.doctorId, dto.date);
-  
+
+  // ✅ PRE-TRANSACTION VALIDATION (outside transaction)
   if (doctor.schedulingType === 'STREAM') {
-    const isValidSlot = (matrix as any).slots?.some(
+    const requestedSlot = (matrix as any).slots?.find(
       (s: any) => new Date(s.startTime).getTime() === requestedStart.getTime()
     );
-    if (!isValidSlot) throw new BadRequestException('Requested slot is unavailable or invalid.');
+
+    if (!requestedSlot) {
+      const nextAvailable = (matrix as any).slots?.[0];
+      throw new BadRequestException({
+        statusCode: 400,
+        error: 'Bad Request',
+        message: 'Requested slot is unavailable or invalid.',
+        suggestedSlot: nextAvailable
+          ? {
+              startTime: nextAvailable.startTime,
+              endTime: nextAvailable.endTime,
+              displayTime: nextAvailable.displayTime
+            }
+          : null
+      });
+    }
+
   } else {
-    const isValidWave = (matrix as any).waves?.some(
-      (w: any) => new Date(w.startTime).getTime() === requestedStart.getTime() && !w.isFull
+    const requestedWave = (matrix as any).waves?.find(
+      (w: any) => new Date(w.startTime).getTime() === requestedStart.getTime()
     );
-    if (!isValidWave) throw new BadRequestException('Requested wave window is full or invalid.');
+
+    if (!requestedWave) {
+      const nextAvailable = (matrix as any).waves?.find((w: any) => !w.isFull);
+      throw new BadRequestException({
+        statusCode: 400,
+        error: 'Bad Request',
+        message: 'Requested wave window is invalid.',
+        suggestedSlot: nextAvailable
+          ? {
+              startTime: nextAvailable.startTime,
+              endTime: nextAvailable.endTime,
+              displayTime: nextAvailable.displayTime,
+              availableSlots: nextAvailable.availableSlots
+            }
+          : null
+      });
+    }
+
+    if (requestedWave.isFull) {
+      const nextAvailable = (matrix as any).waves?.find((w: any) => !w.isFull);
+      throw new BadRequestException({
+        statusCode: 400,
+        error: 'Bad Request',
+        message: 'Requested wave window is full.',
+        suggestedSlot: nextAvailable
+          ? {
+              startTime: nextAvailable.startTime,
+              endTime: nextAvailable.endTime,
+              displayTime: nextAvailable.displayTime,
+              availableSlots: nextAvailable.availableSlots
+            }
+          : null
+      });
+    }
   }
 
-  // Execution Isolation Transaction Block
+  // ✅ TRANSACTION BLOCK (race condition protection)
   return this.prisma.$transaction(async (tx) => {
+    // 1. Fetch active bookings based on doctor and startTime only
     const activeBookings = await tx.appointment.findMany({
       where: {
         doctorId: dto.doctorId,
         startTime: requestedStart,
-        endTime: requestedEnd,
         appointmentStatus: { in: ['BOOKED', 'RESCHEDULED'] }
       }
     });
 
     if (doctor.schedulingType === 'STREAM') {
-      if (activeBookings.length > 0) {
+      // For STREAM, we still want to ensure the exact slot isn't taken
+      const exactSlotTaken = activeBookings.some(b => b.endTime.getTime() === requestedEnd.getTime());
+      if (exactSlotTaken) {
         throw new ConflictException('This exact stream slot has already been booked.');
       }
 
@@ -74,17 +125,18 @@ export class AppointmentService {
       });
 
     } else {
-      // --- WAVE CAP AND AUTO-TOKEN ASSIGNMENT ---
+      // 2. Validate overall wave capacity
       if (activeBookings.length >= doctor.maxWaveCapacity) {
         throw new ConflictException('This wave window is entirely full.');
       }
 
+      // 3. This will now properly catch duplicates since activeBookings captures the whole wave!
       const isAlreadyInWave = activeBookings.some(b => b.patientId === patient.id);
       if (isAlreadyInWave) {
         throw new BadRequestException('Duplicate protection: You already have a token inside this wave block.');
       }
 
-      // Assign sequential token position based on the current order array width
+      // 4. Token numbers will now increment properly (1, 2, 3...)
       const nextTokenNumber = activeBookings.length + 1;
 
       return tx.appointment.create({
@@ -94,7 +146,7 @@ export class AppointmentService {
           startTime: requestedStart,
           endTime: requestedEnd,
           appointmentStatus: 'BOOKED',
-          tokenNumber: nextTokenNumber // 👈 Injects Token ID safely
+          tokenNumber: nextTokenNumber
         }
       });
     }
@@ -193,16 +245,16 @@ export class AppointmentService {
 
 
   async rescheduleAppointment(appointmentId: string, userId: string, dto: BookAppointmentDto) {
-    const patient = await this.prisma.patient.findUnique({ 
+    const patient = await this.prisma.patient.findUnique({
       where: { userId },
-      select: { 
+      select: {
         id: true,
         appointment: {
           where: { id: appointmentId },
           select: { id: true, doctorId: true, startTime: true, endTime: true, appointmentStatus: true }
-        } 
-      } 
-    }) as { 
+        }
+      }
+    }) as {
       id: string;
       appointment: Array<{ id: string; doctorId: string; startTime: Date; endTime: Date; appointmentStatus: AppointmentStatus; }>;
     } | null;
@@ -247,20 +299,39 @@ export class AppointmentService {
 
       if (!isValidSlot) {
         const nextAvailable = (matrix as any).slots?.[0];
-        throw new BadRequestException({ 
-          message: 'Requested slot is unavailable or invalid for rescheduling.', 
-          suggestedSlot: nextAvailable ? `${nextAvailable.displayTime}`: 'No remaining slots available on this date.' });
+        throw new BadRequestException({
+          message: 'Requested slot is unavailable or invalid for rescheduling.',
+          suggestedSlot: nextAvailable ? `${nextAvailable.displayTime}` : 'No remaining slots available on this date.'
+        });
       }
     } else {
-      const isValidWave = (matrix as any).waves?.some(
-        (w: any) => new Date(w.startTime).getTime() === requestedStart.getTime() && !w.isFull
-      );
+      // Step 1: Find a wave block where the requested time fits cleanly inside
+      const targetWave = (matrix as any).waves?.find((w: any) => {
+        const waveStart = new Date(w.startTime).getTime();
+        const waveEnd = new Date(w.endTime).getTime();
+        const requestedStartMs = new Date(`${dto.date}T${dto.startTime}:00.000Z`).getTime();
 
-      if (!isValidWave) {
+        return requestedStartMs >= waveStart && requestedStartMs < waveEnd;
+      });
+
+      // Step 2: Gatekeeper if no wave matches or if it's full
+      if (!targetWave || targetWave.isFull || targetWave.availableSlots <= 0) {
+        // Find alternative waves that have space
         const nextAvailable = (matrix as any).waves?.find((w: any) => !w.isFull);
-        throw new BadRequestException({ 
-          message: 'Requested wave window is full or invalid for rescheduling.',
-          suggestedSlot: nextAvailable ? `${nextAvailable.wave.displayTime}`: 'No remaining wave windows available on this date.' 
+
+        throw new BadRequestException({
+          statusCode: 400,
+          error: 'Bad Request',
+          message: !targetWave 
+            ? 'Requested wave window is invalid for rescheduling. Please select a valid wave slot.'
+            : 'Requested wave window is full for rescheduling.',
+          suggestedSlot: nextAvailable
+            ? {
+                startTime: nextAvailable.startTime,
+                endTime: nextAvailable.endTime,
+                displayTime: nextAvailable.displayTime
+              }
+            : null
         });
       }
     }
@@ -289,9 +360,9 @@ export class AppointmentService {
 
       return tx.appointment.update({
         where: { id: appointmentId },
-        data: { 
-          startTime: requestedStart, 
-          endTime: requestedEnd, 
+        data: {
+          startTime: requestedStart,
+          endTime: requestedEnd,
           appointmentStatus: AppointmentStatus.RESCHEDULED,
           tokenNumber: nextTokenNumber
         },
