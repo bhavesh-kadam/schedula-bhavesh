@@ -358,7 +358,11 @@ export class AppointmentService {
         nextTokenNumber = activeBookingOnNewSlot.length + 1;
       }
 
-      return tx.appointment.update({
+      // Capture old wave window BEFORE updating the record
+      const oldWaveStart = new Date(oldAppointment.startTime);
+      const oldWaveEnd = new Date(oldAppointment.endTime);
+
+      const updatedAppointment = await tx.appointment.update({
         where: { id: appointmentId },
         data: {
           startTime: requestedStart,
@@ -367,6 +371,35 @@ export class AppointmentService {
           tokenNumber: nextTokenNumber
         },
       });
+
+      // --- TOKEN RESEQUENCING for old wave ---
+      // After the record moves out, remaining tokens in the old wave may have gaps.
+      // Re-assign tokens 1, 2, 3... in startTime order (which is booking order for wave).
+      if (doctor.schedulingType === SchedulingType.WAVE) {
+        const remainingOldWaveBookings = await tx.appointment.findMany({
+          where: {
+            doctorId: oldAppointment.doctorId,
+            startTime: oldWaveStart,
+            endTime: oldWaveEnd,
+            appointmentStatus: { in: [AppointmentStatus.BOOKED, AppointmentStatus.RESCHEDULED] }
+          },
+          orderBy: { tokenNumber: 'asc' }
+        });
+
+        // Only resequence if there are gaps (i.e. someone left mid-sequence)
+        if (remainingOldWaveBookings.length > 0) {
+          await Promise.all(
+            remainingOldWaveBookings.map((booking, index) =>
+              tx.appointment.update({
+                where: { id: booking.id },
+                data: { tokenNumber: index + 1 }
+              })
+            )
+          );
+        }
+      }
+
+      return updatedAppointment;
     });
 
   }
