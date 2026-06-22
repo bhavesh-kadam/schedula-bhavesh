@@ -20,7 +20,7 @@ export class DoctorService {
         const e1 = this.parseTimeToMinutes(end1);
         const s2 = this.parseTimeToMinutes(start2);
         const e2 = this.parseTimeToMinutes(end2);
-        return s1 < e2 && e1 > s2;
+        return s1 <= e2 && e1 >= s2;
     }
 
     private checkDateTimeOverlap(start1: Date, end1: Date, start2: Date, end2: Date): boolean {
@@ -104,13 +104,17 @@ async generateAndFilterSlots(doctorId: string, dateString: string, duration?: nu
       );
 
       baselineWindows = validCustomOverrides.map(o => {
-        const sIso = o.startTime.toISOString();
-        const eIso = o.endTime.toISOString();
-        return {
-          startTime: sIso.substring(11, 16),
-          endTime: eIso.substring(11, 16)
+        const formatTime = (date: Date) => {
+            const hours = String(date.getUTCHours()).padStart(2, '0');
+            const minutes = String(date.getUTCMinutes()).padStart(2, '0');
+            return `${hours}:${minutes}`;
         };
-      });
+        
+        return {
+            startTime: formatTime(o.startTime),
+            endTime: formatTime(o.endTime)
+        };
+     });
     } else {
       const daysMapping: Record<number, Day> = {
         0: Day.SUNDAY, 1: Day.MONDAY, 2: Day.TUESDAY, 
@@ -206,8 +210,7 @@ async generateAndFilterSlots(doctorId: string, dateString: string, duration?: nu
         const waveEnd = new Date(`${dateString}T${window.endTime}:00.000Z`);
 
         const waveBookings = existingAppointments.filter(appt => 
-          new Date(appt.startTime).getTime() === waveStart.getTime() &&
-          new Date(appt.endTime).getTime() === waveEnd.getTime()
+          new Date(appt.startTime).getTime() === waveStart.getTime()
         );
 
         return {
@@ -219,7 +222,14 @@ async generateAndFilterSlots(doctorId: string, dateString: string, duration?: nu
           availableSlots: Math.max(0, doctor.maxWaveCapacity - waveBookings.length),
           isFull: waveBookings.length >= doctor.maxWaveCapacity
         };
-      }).filter(w => new Date(w.startTime).getTime() > systemNow.getTime());
+      }).filter(w => {
+            // Only time-filter if we're looking at today's date
+            const todayString = new Date().toISOString().split('T')[0];
+            if (dateString === todayString) {
+                return new Date(w.startTime).getTime() > systemNow.getTime();
+            }
+            return true; // Future dates: keep all waves
+        });
 
       return {
         date: dateString,
@@ -254,9 +264,20 @@ async generateAndFilterSlots(doctorId: string, dateString: string, duration?: nu
         if (existingDoctor) throw new ConflictException("Doctor profile already exists");
 
         // Validate early time windows nested in profile creation payload
-        for (const item of dto.availability) {
-            if (this.parseTimeToMinutes(item.startTime) >= this.parseTimeToMinutes(item.endTime)) {
-                throw new BadRequestException(`Invalid time range: ${item.startTime} to ${item.endTime}`);
+        for (let i = 0; i < dto.availability.length; i++) {
+            const itemA = dto.availability[i];
+            if (this.parseTimeToMinutes(itemA.startTime) >= this.parseTimeToMinutes(itemA.endTime)) {
+                throw new BadRequestException(`Invalid time range: ${itemA.startTime} to ${itemA.endTime}`);
+            }
+
+            // Check against all other items in the same array payload
+            for (let j = i + 1; j < dto.availability.length; j++) {
+                const itemB = dto.availability[j];
+                if (itemA.dayOfWeek === itemB.dayOfWeek) {
+                    if (this.checkTimeOverlap(itemA.startTime, itemA.endTime, itemB.startTime, itemB.endTime)) {
+                        throw new ConflictException(`❌ Payload contains overlapping schedules for ${itemA.dayOfWeek}: ${itemA.startTime} vs ${itemB.startTime}`);
+                    }
+                }
             }
         }
 
@@ -268,6 +289,8 @@ async generateAndFilterSlots(doctorId: string, dateString: string, duration?: nu
                 consultationFee: dto.consultationFee,
                 yearOfExperience: dto.yearsOfExperience,
                 activeStatus: ActiveStatus.ACTIVE,
+                schedulingType: dto.schedulingType,
+                maxWaveCapacity: dto.maxWaveCapacity,
                 userId,
                 recurringAvailability: {
                     createMany: {
@@ -293,6 +316,8 @@ async generateAndFilterSlots(doctorId: string, dateString: string, duration?: nu
                 specialization: dto.specialization,
                 yearOfExperience: dto.yearsOfExperience,
                 activeStatus: dto.activeStatus,
+                schedulingType: dto.schedulingType,
+                maxWaveCapacity: dto.maxWaveCapacity,
             }
         });
 

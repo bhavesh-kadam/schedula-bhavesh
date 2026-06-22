@@ -1,6 +1,6 @@
 import { Transform, Type } from "class-transformer";
 import { IsArray, IsEnum, IsInt, IsNotEmpty, IsNumber, IsOptional, IsString, Max, Min, ValidateNested, IsDateString, Matches } from "class-validator";
-import { ActiveStatus, Day, OverrideType } from "src/generated/prisma/enums";
+import { ActiveStatus, Day, OverrideType, SchedulingType } from "src/generated/prisma/enums";
 
 export class RecurringAvailabilityDto {
     @IsEnum(Day)
@@ -59,6 +59,19 @@ export class SaveProfileDto {
     @IsString()
     profileDetails: string;
 
+    @IsOptional()
+    @IsEnum(SchedulingType)
+    schedulingType?: SchedulingType;
+
+    @IsOptional()
+    @IsNumber()
+    @Min(1)
+    maxWaveCapacity?: number;
+
+    @IsOptional()
+    @IsNumber()
+    bufferTime?: number;
+
     @IsArray()
     @ValidateNested({ each: true })
     @Type(() => RecurringAvailabilityDto)
@@ -91,6 +104,15 @@ export class UpdateProfileDto {
     yearsOfExperience: number;
 
     @IsOptional()
+    @IsEnum(SchedulingType)
+    schedulingType?: SchedulingType;
+
+    @IsOptional()
+    @IsNumber()
+    @Min(1)
+    maxWaveCapacity?: number;
+
+    @IsOptional()
     @IsNumber()
     consultationFee: number;
 
@@ -102,6 +124,7 @@ export class UpdateProfileDto {
     @IsEnum(ActiveStatus)
     activeStatus: ActiveStatus;
 
+    @IsOptional()
     @IsArray()
     @ValidateNested({ each: true })
     @Type(() => RecurringAvailabilityDto)
