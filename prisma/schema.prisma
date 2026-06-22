@@ -45,7 +45,8 @@ enum BloodGroup {
 enum AppointmentStatus {
   BOOKED
   COMPLETED
-  CANCELLED
+  CANCELLED_BY_PATIENT
+  CANCELLED_BY_DOCTOR
   RESCHEDULED
 }
 

@@ -88,6 +88,35 @@ export class DoctorController {
     return this.doctorService.getAvailabilityByDate(doctorId, dateString);
   }
 
+  // --- APPOINTMENTS Mangement ---
+  @UseGuards(AuthGuard, RoleGuard)
+  @Roles(Role.DOCTOR)
+  @Get('/appointments')
+  async getDoctorAppointments(
+    @GetUser() user: JwtPayload,
+    @Query('date') dateString?: string
+  ) {
+    return this.doctorService.getDoctorAppointments(user.sub, dateString);
+  }
+
+  @UseGuards(AuthGuard, RoleGuard)
+  @Roles(Role.DOCTOR)
+  @Patch('/appointments/:id/cancel')
+  async cancelDoctorAppointment(
+    @GetUser() user: JwtPayload, 
+    @Param('id', ParseUUIDPipe) appointmentId: string) {
+    return this.doctorService.cancelDoctorAppointment(user.sub, appointmentId);
+  }
+
+  @UseGuards(AuthGuard, RoleGuard)
+  @Roles(Role.DOCTOR)
+  @Patch('/appointments/cancel-day')
+  async cancelDoctorDay(
+    @GetUser() user: JwtPayload, 
+    @Query('date') dateString: string) {
+    return this.doctorService.cancelDoctorDay(user.sub, dateString);
+   }
+
   // --- PUBLIC DIRECTORIES ---
 
   @Get()

@@ -196,8 +196,11 @@ export class AppointmentService {
       throw new ForbiddenException('Access Denied: You cannot alter another patient’s appointment.');
     }
 
-    // Rule: Cannot cancel already cancelled appointment
-    if (appointment.appointmentStatus === AppointmentStatus.CANCELLED) {
+    // Rule: Cannot cancel an already cancelled appointment
+    if (
+      appointment.appointmentStatus === AppointmentStatus.CANCELLED_BY_PATIENT ||
+      appointment.appointmentStatus === AppointmentStatus.CANCELLED_BY_DOCTOR
+    ) {
       throw new BadRequestException('Action Invalid: This appointment is already cancelled.');
     }
 
@@ -208,7 +211,7 @@ export class AppointmentService {
 
     return this.prisma.appointment.update({
       where: { id: appointmentId },
-      data: { appointmentStatus: AppointmentStatus.CANCELLED },
+      data: { appointmentStatus: AppointmentStatus.CANCELLED_BY_PATIENT },
     });
   }
 
@@ -266,7 +269,8 @@ export class AppointmentService {
 
     const oldAppointment = patient.appointment[0];
 
-    if (oldAppointment.appointmentStatus === AppointmentStatus.CANCELLED) {
+    if (oldAppointment.appointmentStatus === AppointmentStatus.CANCELLED_BY_PATIENT || 
+        oldAppointment.appointmentStatus === AppointmentStatus.CANCELLED_BY_DOCTOR) {
       throw new BadRequestException('Cannot reschedule a cancelled appointment. Please book a new one instead.');
     }
 

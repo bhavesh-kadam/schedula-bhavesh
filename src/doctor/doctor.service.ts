@@ -1,12 +1,12 @@
 import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException, UnauthorizedException } from '@nestjs/common';
-import { ActiveStatus, Role, Day, OverrideType, SchedulingType } from 'src/generated/prisma/enums';
+import { ActiveStatus, Role, Day, OverrideType, SchedulingType, AppointmentStatus } from 'src/generated/prisma/enums';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { GetDoctorsQueryDto, SaveProfileDto, UpdateProfileDto, RecurringAvailabilityDto, CustomAvailabilityDto } from './dto/doctor-profile.dto';
 import { Prisma } from 'src/generated/prisma/client';
 
 @Injectable()
 export class DoctorService {
-    constructor(private prisma: PrismaService) {}
+    constructor(private prisma: PrismaService) { }
 
     // --- INTERNAL VALIDATION HELPERS ---
 
@@ -42,207 +42,207 @@ export class DoctorService {
  * Core dynamic chunk generator that converts a start and end window into discrete booking slots.
  * Accounts for shifting string-based times and full standard JS Dates safely.
  */
-private sliceTimeIntoSlots(startTimeStr: string, endTimeStr: string, durationMinutes: number, targetDateStr: string): { start: Date; end: Date }[] {
-    const slots: { start: Date; end: Date }[] = [];
-    
-    // Construct real comparison baseline dates using the targeted calendar date
-    const startBasetime = new Date(`${targetDateStr}T${startTimeStr}:00Z`);
-    const endBasetime = new Date(`${targetDateStr}T${endTimeStr}:00Z`);
+    private sliceTimeIntoSlots(startTimeStr: string, endTimeStr: string, durationMinutes: number, targetDateStr: string): { start: Date; end: Date }[] {
+        const slots: { start: Date; end: Date }[] = [];
 
-    let currentTrack = new Date(startBasetime.getTime());
+        // Construct real comparison baseline dates using the targeted calendar date
+        const startBasetime = new Date(`${targetDateStr}T${startTimeStr}:00Z`);
+        const endBasetime = new Date(`${targetDateStr}T${endTimeStr}:00Z`);
 
-    while (currentTrack.getTime() + durationMinutes * 60000 <= endBasetime.getTime()) {
-        const nextTrack = new Date(currentTrack.getTime() + durationMinutes * 60000);
-        slots.push({
-            start: new Date(currentTrack),
-            end: nextTrack
-        });
-        currentTrack = nextTrack;
-    }
-
-    return slots;
-}
-
-// Replace or update your existing generateAndFilterSlots method with this:
-async generateAndFilterSlots(doctorId: string, dateString: string, duration?: number) {
-    // 1. Verify Doctor Existence & pull Strategy Configurations
-    const doctor = await this.prisma.doctor.findUnique({
-      where: { id: doctorId }
-    });
-    if (!doctor) {
-      throw new NotFoundException("Doctor not found");
-    }
-
-    // 2. Validate Target Date Boundaries
-    const targetDate = new Date(dateString);
-    if (isNaN(targetDate.getTime())) {
-      throw new BadRequestException("Invalid date format provided");
-    }
-
-    const todayString = new Date().toISOString().split('T')[0];
-    if (dateString < todayString) {
-      throw new BadRequestException("Cannot check slots for a past calendar date");
-    }
-
-    const systemNow = new Date();
-    let baselineWindows: { startTime: string; endTime: string }[] = [];
-
-    // 3. Resolve Availability Matrix (Custom Override priority over Weekly Recurring)
-    const customOverrides = await this.prisma.customAvailability.findMany({
-      where: { doctorId, date: new Date(dateString) }
-    });
-
-    if (customOverrides.length > 0) {
-      const blockedDay = customOverrides.find(o => o.overrideType === OverrideType.UNAVAILABLE);
-      if (blockedDay) {
-        throw new BadRequestException("The doctor has declared themselves unavailable on this selected date");
-      }
-
-      const validCustomOverrides = customOverrides.filter(
-        (o): o is typeof customOverrides[number] & { startTime: Date; endTime: Date } =>
-          o.startTime !== null && o.endTime !== null
-      );
-
-      baselineWindows = validCustomOverrides.map(o => {
-        const formatTime = (date: Date) => {
-            const hours = String(date.getUTCHours()).padStart(2, '0');
-            const minutes = String(date.getUTCMinutes()).padStart(2, '0');
-            return `${hours}:${minutes}`;
-        };
-        
-        return {
-            startTime: formatTime(o.startTime),
-            endTime: formatTime(o.endTime)
-        };
-     });
-    } else {
-      const daysMapping: Record<number, Day> = {
-        0: Day.SUNDAY, 1: Day.MONDAY, 2: Day.TUESDAY, 
-        3: Day.WEDNESDAY, 4: Day.THURSDAY, 5: Day.FRIDAY, 6: Day.SATURDAY
-      };
-      const targetDayOfWeek = daysMapping[targetDate.getUTCDay()];
-
-      const recurringWindows = await this.prisma.recurringAvailability.findMany({
-        where: { doctorId, dayOfWeek: targetDayOfWeek }
-      });
-
-      baselineWindows = recurringWindows.map(r => ({
-        startTime: r.startTime,
-        endTime: r.endTime
-      }));
-    }
-
-    if (baselineWindows.length === 0) {
-      return { 
-        date: dateString, 
-        schedulingType: doctor.schedulingType,
-        slots: [], 
-        waves: [], 
-        message: "No operational availability scheduled for this date" 
-      };
-    }
-
-    // 4. Gather Active Bookings
-    const dayStart = new Date(`${dateString}T00:00:00.000Z`);
-    const dayEnd = new Date(`${dateString}T23:59:59.999Z`);
-
-    const existingAppointments = await this.prisma.appointment.findMany({
-      where: {
-        doctorId,
-        appointmentStatus: { in: ['BOOKED', 'RESCHEDULED', 'COMPLETED'] },
-        startTime: { gte: dayStart, lte: dayEnd }
-      },
-      select: { startTime: true, endTime: true, patientId: true }
-    });
-
-    // --- 5. EXECUTE BRANCHING STRATEGY SELECTION (STREAM VS WAVE) ---
-
-    if (doctor.schedulingType === SchedulingType.STREAM) {
-      const slotDuration = duration || doctor.slotDuration;
-      if (slotDuration <= 0) throw new BadRequestException('Invalid configurations: duration must be positive');
-      
-      let rawGeneratedSlots: { start: Date; end: Date }[] = [];
-
-      for (const window of baselineWindows) {
-        const startBasetime = new Date(`${dateString}T${window.startTime}:00Z`);
-        const endBasetime = new Date(`${dateString}T${window.endTime}:00Z`);
         let currentTrack = new Date(startBasetime.getTime());
 
-        while (currentTrack.getTime() + slotDuration * 60000 <= endBasetime.getTime()) {
-          const nextTrack = new Date(currentTrack.getTime() + slotDuration * 60000);
-          rawGeneratedSlots.push({ start: new Date(currentTrack), end: nextTrack });
-          
-          currentTrack = new Date(nextTrack.getTime() + doctor.bufferTime * 60000);
+        while (currentTrack.getTime() + durationMinutes * 60000 <= endBasetime.getTime()) {
+            const nextTrack = new Date(currentTrack.getTime() + durationMinutes * 60000);
+            slots.push({
+                start: new Date(currentTrack),
+                end: nextTrack
+            });
+            currentTrack = nextTrack;
         }
-      }
 
-      const bookableSlots = rawGeneratedSlots.filter(slot => {
-        if (slot.start.getTime() <= systemNow.getTime()) return false;
-
-        const isCollision = existingAppointments.some(appt => {
-          const apptStart = new Date(appt.startTime).getTime();
-          const apptEnd = new Date(appt.endTime).getTime();
-          return slot.start.getTime() < apptEnd && slot.end.getTime() > apptStart;
-        });
-
-        return !isCollision;
-      });
-
-      return {
-        date: dateString,
-        schedulingType: SchedulingType.STREAM,
-        configDurationMinutes: slotDuration,
-        bufferTimeMinutes: doctor.bufferTime,
-        totalAvailableSlots: bookableSlots.length,
-        slots: bookableSlots.map(s => ({
-          startTime: s.start.toISOString(),
-          endTime: s.end.toISOString(),
-          displayTime: `${s.start.toISOString().substring(11, 16)} - ${s.end.toISOString().substring(11, 16)}`
-        }))
-      };
-
-    } else {
-      // --- WAVE SELECTION ECOSYSTEM ---
-      if (doctor.maxWaveCapacity <= 0) throw new BadRequestException('Invalid wave capacity configuration');
-
-      const bookableWaves = baselineWindows.map(window => {
-        const waveStart = new Date(`${dateString}T${window.startTime}:00.000Z`);
-        const waveEnd = new Date(`${dateString}T${window.endTime}:00.000Z`);
-
-        const waveBookings = existingAppointments.filter(appt => 
-          new Date(appt.startTime).getTime() === waveStart.getTime()
-        );
-
-        return {
-          startTime: waveStart.toISOString(),
-          endTime: waveEnd.toISOString(),
-          displayTime: `${window.startTime} - ${window.endTime}`,
-          maxCapacity: doctor.maxWaveCapacity,
-          bookedCount: waveBookings.length,
-          availableSlots: Math.max(0, doctor.maxWaveCapacity - waveBookings.length),
-          isFull: waveBookings.length >= doctor.maxWaveCapacity
-        };
-      }).filter(w => {
-            // Only time-filter if we're looking at today's date
-            const todayString = new Date().toISOString().split('T')[0];
-            if (dateString === todayString) {
-                return new Date(w.startTime).getTime() > systemNow.getTime();
-            }
-            return true; // Future dates: keep all waves
-        });
-
-      return {
-        date: dateString,
-        schedulingType: SchedulingType.WAVE,
-        totalAvailableWaves: bookableWaves.length,
-        waves: bookableWaves
-      };
+        return slots;
     }
-  }
+
+    // Replace or update your existing generateAndFilterSlots method with this:
+    async generateAndFilterSlots(doctorId: string, dateString: string, duration?: number) {
+        // 1. Verify Doctor Existence & pull Strategy Configurations
+        const doctor = await this.prisma.doctor.findUnique({
+            where: { id: doctorId }
+        });
+        if (!doctor) {
+            throw new NotFoundException("Doctor not found");
+        }
+
+        // 2. Validate Target Date Boundaries
+        const targetDate = new Date(dateString);
+        if (isNaN(targetDate.getTime())) {
+            throw new BadRequestException("Invalid date format provided");
+        }
+
+        const todayString = new Date().toISOString().split('T')[0];
+        if (dateString < todayString) {
+            throw new BadRequestException("Cannot check slots for a past calendar date");
+        }
+
+        const systemNow = new Date();
+        let baselineWindows: { startTime: string; endTime: string }[] = [];
+
+        // 3. Resolve Availability Matrix (Custom Override priority over Weekly Recurring)
+        const customOverrides = await this.prisma.customAvailability.findMany({
+            where: { doctorId, date: new Date(dateString) }
+        });
+
+        if (customOverrides.length > 0) {
+            const blockedDay = customOverrides.find(o => o.overrideType === OverrideType.UNAVAILABLE);
+            if (blockedDay) {
+                throw new BadRequestException("The doctor has declared themselves unavailable on this selected date");
+            }
+
+            const validCustomOverrides = customOverrides.filter(
+                (o): o is typeof customOverrides[number] & { startTime: Date; endTime: Date } =>
+                    o.startTime !== null && o.endTime !== null
+            );
+
+            baselineWindows = validCustomOverrides.map(o => {
+                const formatTime = (date: Date) => {
+                    const hours = String(date.getUTCHours()).padStart(2, '0');
+                    const minutes = String(date.getUTCMinutes()).padStart(2, '0');
+                    return `${hours}:${minutes}`;
+                };
+
+                return {
+                    startTime: formatTime(o.startTime),
+                    endTime: formatTime(o.endTime)
+                };
+            });
+        } else {
+            const daysMapping: Record<number, Day> = {
+                0: Day.SUNDAY, 1: Day.MONDAY, 2: Day.TUESDAY,
+                3: Day.WEDNESDAY, 4: Day.THURSDAY, 5: Day.FRIDAY, 6: Day.SATURDAY
+            };
+            const targetDayOfWeek = daysMapping[targetDate.getUTCDay()];
+
+            const recurringWindows = await this.prisma.recurringAvailability.findMany({
+                where: { doctorId, dayOfWeek: targetDayOfWeek }
+            });
+
+            baselineWindows = recurringWindows.map(r => ({
+                startTime: r.startTime,
+                endTime: r.endTime
+            }));
+        }
+
+        if (baselineWindows.length === 0) {
+            return {
+                date: dateString,
+                schedulingType: doctor.schedulingType,
+                slots: [],
+                waves: [],
+                message: "No operational availability scheduled for this date"
+            };
+        }
+
+        // 4. Gather Active Bookings
+        const dayStart = new Date(`${dateString}T00:00:00.000Z`);
+        const dayEnd = new Date(`${dateString}T23:59:59.999Z`);
+
+        const existingAppointments = await this.prisma.appointment.findMany({
+            where: {
+                doctorId,
+                appointmentStatus: { in: ['BOOKED', 'RESCHEDULED', 'COMPLETED'] },
+                startTime: { gte: dayStart, lte: dayEnd }
+            },
+            select: { startTime: true, endTime: true, patientId: true }
+        });
+
+        // --- 5. EXECUTE BRANCHING STRATEGY SELECTION (STREAM VS WAVE) ---
+
+        if (doctor.schedulingType === SchedulingType.STREAM) {
+            const slotDuration = duration || doctor.slotDuration;
+            if (slotDuration <= 0) throw new BadRequestException('Invalid configurations: duration must be positive');
+
+            let rawGeneratedSlots: { start: Date; end: Date }[] = [];
+
+            for (const window of baselineWindows) {
+                const startBasetime = new Date(`${dateString}T${window.startTime}:00Z`);
+                const endBasetime = new Date(`${dateString}T${window.endTime}:00Z`);
+                let currentTrack = new Date(startBasetime.getTime());
+
+                while (currentTrack.getTime() + slotDuration * 60000 <= endBasetime.getTime()) {
+                    const nextTrack = new Date(currentTrack.getTime() + slotDuration * 60000);
+                    rawGeneratedSlots.push({ start: new Date(currentTrack), end: nextTrack });
+
+                    currentTrack = new Date(nextTrack.getTime() + doctor.bufferTime * 60000);
+                }
+            }
+
+            const bookableSlots = rawGeneratedSlots.filter(slot => {
+                if (slot.start.getTime() <= systemNow.getTime()) return false;
+
+                const isCollision = existingAppointments.some(appt => {
+                    const apptStart = new Date(appt.startTime).getTime();
+                    const apptEnd = new Date(appt.endTime).getTime();
+                    return slot.start.getTime() < apptEnd && slot.end.getTime() > apptStart;
+                });
+
+                return !isCollision;
+            });
+
+            return {
+                date: dateString,
+                schedulingType: SchedulingType.STREAM,
+                configDurationMinutes: slotDuration,
+                bufferTimeMinutes: doctor.bufferTime,
+                totalAvailableSlots: bookableSlots.length,
+                slots: bookableSlots.map(s => ({
+                    startTime: s.start.toISOString(),
+                    endTime: s.end.toISOString(),
+                    displayTime: `${s.start.toISOString().substring(11, 16)} - ${s.end.toISOString().substring(11, 16)}`
+                }))
+            };
+
+        } else {
+            // --- WAVE SELECTION ECOSYSTEM ---
+            if (doctor.maxWaveCapacity <= 0) throw new BadRequestException('Invalid wave capacity configuration');
+
+            const bookableWaves = baselineWindows.map(window => {
+                const waveStart = new Date(`${dateString}T${window.startTime}:00.000Z`);
+                const waveEnd = new Date(`${dateString}T${window.endTime}:00.000Z`);
+
+                const waveBookings = existingAppointments.filter(appt =>
+                    new Date(appt.startTime).getTime() === waveStart.getTime()
+                );
+
+                return {
+                    startTime: waveStart.toISOString(),
+                    endTime: waveEnd.toISOString(),
+                    displayTime: `${window.startTime} - ${window.endTime}`,
+                    maxCapacity: doctor.maxWaveCapacity,
+                    bookedCount: waveBookings.length,
+                    availableSlots: Math.max(0, doctor.maxWaveCapacity - waveBookings.length),
+                    isFull: waveBookings.length >= doctor.maxWaveCapacity
+                };
+            }).filter(w => {
+                // Only time-filter if we're looking at today's date
+                const todayString = new Date().toISOString().split('T')[0];
+                if (dateString === todayString) {
+                    return new Date(w.startTime).getTime() > systemNow.getTime();
+                }
+                return true; // Future dates: keep all waves
+            });
+
+            return {
+                date: dateString,
+                schedulingType: SchedulingType.WAVE,
+                totalAvailableWaves: bookableWaves.length,
+                waves: bookableWaves
+            };
+        }
+    }
 
     // --- PROFILE CORE METHODS ---
 
-    async fetchDoctorProfile (userId: string) {
+    async fetchDoctorProfile(userId: string) {
         const user = await this.prisma.user.findUnique({
             where: { id: userId },
             select: {
@@ -256,7 +256,7 @@ async generateAndFilterSlots(doctorId: string, dateString: string, duration?: nu
         return { user };
     }
 
-    async saveDoctorProfile (dto: SaveProfileDto, userId: string) {
+    async saveDoctorProfile(dto: SaveProfileDto, userId: string) {
         const existingDoctor = await this.prisma.doctor.findUnique({
             where: { userId },
             select: { id: true }
@@ -307,7 +307,7 @@ async generateAndFilterSlots(doctorId: string, dateString: string, duration?: nu
         return { result };
     }
 
-    async updateDoctorProfile (dto: UpdateProfileDto, userId: string) {
+    async updateDoctorProfile(dto: UpdateProfileDto, userId: string) {
         const doctor = await this.getDoctorByUserId(userId);
 
         const result = await this.prisma.doctor.update({
@@ -363,7 +363,7 @@ async generateAndFilterSlots(doctorId: string, dateString: string, duration?: nu
 
     async updateRecurringAvailability(id: string, userId: string, dto: RecurringAvailabilityDto) {
         const doctor = await this.getDoctorByUserId(userId);
-        
+
         const targetSlot = await this.prisma.recurringAvailability.findUnique({ where: { id } });
         if (!targetSlot || targetSlot.doctorId !== doctor.id) {
             throw new NotFoundException("Availability window not found or access denied");
@@ -392,7 +392,7 @@ async generateAndFilterSlots(doctorId: string, dateString: string, duration?: nu
     async deleteRecurringAvailability(id: string, userId: string) {
         const doctor = await this.getDoctorByUserId(userId);
         const targetSlot = await this.prisma.recurringAvailability.findUnique({ where: { id } });
-        
+
         if (!targetSlot || targetSlot.doctorId !== doctor.id) {
             throw new NotFoundException("Availability window not found");
         }
@@ -405,7 +405,7 @@ async generateAndFilterSlots(doctorId: string, dateString: string, duration?: nu
     async createCustomOverride(userId: string, dto: CustomAvailabilityDto) {
         const doctor = await this.getDoctorByUserId(userId);
         const targetDate = new Date(dto.date);
-        
+
         if (isNaN(targetDate.getTime())) {
             throw new BadRequestException("Invalid date format provided");
         }
@@ -470,7 +470,7 @@ async generateAndFilterSlots(doctorId: string, dateString: string, duration?: nu
         }
 
         const daysMapping: Record<number, Day> = {
-            0: Day.SUNDAY, 1: Day.MONDAY, 2: Day.TUESDAY, 
+            0: Day.SUNDAY, 1: Day.MONDAY, 2: Day.TUESDAY,
             3: Day.WEDNESDAY, 4: Day.THURSDAY, 5: Day.FRIDAY, 6: Day.SATURDAY
         };
         const targetDayOfWeek = daysMapping[targetDate.getUTCDay()];
@@ -487,9 +487,139 @@ async generateAndFilterSlots(doctorId: string, dateString: string, duration?: nu
         };
     }
 
+    // APPOINTMENT Management for Doctors
+    async getDoctorAppointments(userId: string, dateString?: string) {
+        const doctor = await this.prisma.doctor.findUnique({
+            where: { userId },
+            select: { id: true, schedulingType: true }
+        });
+
+        if (!doctor) {
+            throw new NotFoundException("Doctor profile not found for this user");
+        }
+
+        if (dateString && isNaN(new Date(dateString).getTime())) {
+            throw new BadRequestException("Invalid date format for filtering appointments");
+        }
+
+        const appointments = await this.prisma.appointment.findMany({
+            where: {
+                doctorId: doctor.id,
+                appointmentStatus: { in: ['BOOKED', 'RESCHEDULED', 'COMPLETED'] },
+                ...(dateString ? { startTime: { gte: new Date(`${dateString}T00:00:00.000Z`), lte: new Date(`${dateString}T23:59:59.999Z`) } } : {})
+            },
+            orderBy: { startTime: 'asc' },
+            include:
+            {
+                patient:
+                {
+                    include:
+                    {
+                        user: {
+                            select: {
+                                firstName: true,
+                                lastName: true,
+                                email: true,
+                                mobileNo: true,
+                            }
+                        }
+                    },
+                }
+            }
+        });
+
+        console.log(JSON.stringify(appointments, null, 2)); // Debugging output
+
+        if (appointments.length === 0) {
+            return { message: "No appointments found" };
+        }
+
+        return appointments.map(appt => ({
+            appointmentId: appt.id,
+            patient: {
+                patientId: appt.patient.id,
+                fullName: `${appt.patient.user.firstName} ${appt.patient.user.lastName}`,
+                email: appt.patient.user.email,
+                mobileNo: appt.patient.user.mobileNo
+            },
+            startTime: appt.startTime,
+            endTime: appt.endTime,
+            scheduledStatus: appt.appointmentStatus,
+            schedulingType: doctor.schedulingType,
+            tokenNumber: appt.tokenNumber,
+            createdAt: appt.createdAt,
+            updatedAt: appt.updatedAt
+        }));
+    }
+
+    async cancelDoctorAppointment(userId: string, appointmentId: string) {
+        const doctor = await this.getDoctorByUserId(userId);
+
+        const appointment = await this.prisma.appointment.findUnique({
+            where: { id: appointmentId }
+        });
+
+        if (!appointment || appointment.doctorId !== doctor.id) {
+            throw new NotFoundException("Appointment not found or access denied");
+        }
+
+        // Cover all cancellation variants
+        const cancelledStatuses: AppointmentStatus[] = [
+            AppointmentStatus.CANCELLED_BY_DOCTOR,
+            AppointmentStatus.CANCELLED_BY_PATIENT
+        ];
+        const alreadyCancelled = cancelledStatuses.includes(appointment.appointmentStatus as AppointmentStatus);
+
+        if (alreadyCancelled) {
+            throw new BadRequestException("Appointment is already cancelled");
+        }
+
+        return this.prisma.appointment.update({
+            where: { id: appointmentId },
+            data: { appointmentStatus: AppointmentStatus.CANCELLED_BY_DOCTOR }
+        });
+    }
+
+    async cancelDoctorDay(userId: string, dateString: string) {
+        const doctor = await this.getDoctorByUserId(userId);
+        const targetDate = new Date(dateString);
+
+        if (isNaN(targetDate.getTime())) {
+            throw new BadRequestException("Invalid date format provided");
+        }
+
+        const dayStart = new Date(`${dateString}T00:00:00.000Z`);
+        const dayEnd = new Date(`${dateString}T23:59:59.999Z`);
+
+        await this.prisma.appointment.updateMany({
+            where: {
+                doctorId: doctor.id,
+                startTime: { gte: dayStart, lte: dayEnd },
+                appointmentStatus: { in: [AppointmentStatus.BOOKED, AppointmentStatus.RESCHEDULED] }
+            },
+            data: { appointmentStatus: AppointmentStatus.CANCELLED_BY_DOCTOR }
+        });
+
+        await this.prisma.customAvailability.create({
+            data: {
+                doctorId: doctor.id,
+                date: targetDate,
+                overrideType: OverrideType.UNAVAILABLE,
+                startTime: null,
+                endTime: null
+            }
+        });
+
+        return {
+            message: `All appointments on ${dateString} have been cancelled and the day has been marked as unavailable`
+        }
+
+    }
+
+
     // --- PUBLIC RECTORY RETRIEVALS ---
 
-    async getDoctors (query: GetDoctorsQueryDto) {
+    async getDoctors(query: GetDoctorsQueryDto) {
         const { specialization, search, availability, page = 1, limit = 10 } = query;
         const where: Prisma.DoctorWhereInput = {};
 
@@ -524,7 +654,7 @@ async generateAndFilterSlots(doctorId: string, dateString: string, duration?: nu
         }));
     }
 
-    async getDoctorById (doctorId: string) {
+    async getDoctorById(doctorId: string) {
         const doctor = await this.prisma.doctor.findUnique({
             where: { id: doctorId },
             select: {
@@ -534,7 +664,8 @@ async generateAndFilterSlots(doctorId: string, dateString: string, duration?: nu
                 specialization: true,
                 yearOfExperience: true,
                 recurringAvailability: true,
-                customAvailability: true
+                customAvailability: true,
+                schedulingType: true,
             },
         });
 
