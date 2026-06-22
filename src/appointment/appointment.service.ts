@@ -17,6 +17,58 @@ export class AppointmentService {
     private doctorService: DoctorService,
   ) { }
 
+  
+  // next available appointmetn helper function
+  private async findNextAvailableSlot(
+    doctorId: string, 
+    fromDate: string,
+    searchWindowDays: number = 30
+  ) : Promise<
+    | { date: string; slots: any[]; schedulingType: SchedulingType }
+    | { date: string; waves: any[]; schedulingType: SchedulingType }
+    | null
+  > 
+  {
+    const doctor = await this.prisma.doctor.findUnique({ where: { id: doctorId } });
+    if (!doctor) {
+      throw new NotFoundException('Doctor record not found.');
+    }
+
+    let searchDate = new Date(`${fromDate}T00:00:00.000Z`);
+
+    for (let i = 0; i < searchWindowDays; i++) {
+      const dateString = searchDate.toISOString().split('T')[0];
+
+      try {
+        const result = await this.doctorService.generateAndFilterSlots(doctorId, dateString);
+
+        const hasAvailablility = doctor.schedulingType === SchedulingType.STREAM
+          ? (result as any).slots?.length > 0
+          : (result as any).waves?.some((w: any) => !w.isFull);
+
+        if (hasAvailablility) {
+          return {
+            date: dateString,
+            schedulingType: doctor.schedulingType,
+            ...(doctor.schedulingType === SchedulingType.STREAM
+              ? { slots: (result as any).slots }
+              : { waves: (result as any).waves }
+            )
+          };
+        } 
+      }
+      catch (error) {
+        // bcoz our generateAndFilterSlots method throws an error 
+        // if the doctor has no availability on that date, 
+        // we can safey ignore it and continue searching
+      }
+
+      searchDate.setUTCDate(searchDate.getUTCDate() + 1); 
+    } 
+
+    return null; 
+  }
+
   // 1. Book Appointment
   async bookAppointment(userId: string, dto: BookAppointmentDto) {
   const patient = await this.prisma.patient.findUnique({ where: { userId } });
