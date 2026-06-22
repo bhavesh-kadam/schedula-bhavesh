@@ -110,6 +110,10 @@ export class AppointmentService {
       (w: any) => new Date(w.startTime).getTime() === requestedStart.getTime()
     );
 
+    // hello kamesh sir, 
+    // should i combine following two if conditions into one, 
+    // since both throw the same error with different message?
+
     if (!requestedWave) {
       const nextAvailable = await this.findNextAvailableSlot(dto.doctorId, dto.date);
       throw new BadRequestException({
