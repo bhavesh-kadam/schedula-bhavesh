@@ -93,18 +93,15 @@ export class AppointmentService {
     );
 
     if (!requestedSlot) {
-      const nextAvailable = (matrix as any).slots?.[0];
+      // const nextAvailable = (matrix as any).slots?.[0];
+      const nextAvailable = await this.findNextAvailableSlot(dto.doctorId, dto.date);
       throw new BadRequestException({
         statusCode: 400,
         error: 'Bad Request',
         message: 'Requested slot is unavailable or invalid.',
-        suggestedSlot: nextAvailable
-          ? {
-              startTime: nextAvailable.startTime,
-              endTime: nextAvailable.endTime,
-              displayTime: nextAvailable.displayTime
-            }
-          : null
+        suggestedSlot: nextAvailable ?? {
+          message: 'No available slots found in the next 30 days for this doctor.'
+        }
       });
     }
 
@@ -114,36 +111,26 @@ export class AppointmentService {
     );
 
     if (!requestedWave) {
-      const nextAvailable = (matrix as any).waves?.find((w: any) => !w.isFull);
+      const nextAvailable = await this.findNextAvailableSlot(dto.doctorId, dto.date);
       throw new BadRequestException({
         statusCode: 400,
         error: 'Bad Request',
         message: 'Requested wave window is invalid.',
-        suggestedSlot: nextAvailable
-          ? {
-              startTime: nextAvailable.startTime,
-              endTime: nextAvailable.endTime,
-              displayTime: nextAvailable.displayTime,
-              availableSlots: nextAvailable.availableSlots
-            }
-          : null
+        suggestedSlot: nextAvailable ?? {
+          message: 'No available wave slots found in the next 30 days for this doctor.'
+        }
       });
     }
 
     if (requestedWave.isFull) {
-      const nextAvailable = (matrix as any).waves?.find((w: any) => !w.isFull);
+      const nextAvailable = await this.findNextAvailableSlot(dto.doctorId, dto.date);
       throw new BadRequestException({
         statusCode: 400,
         error: 'Bad Request',
         message: 'Requested wave window is full.',
-        suggestedSlot: nextAvailable
-          ? {
-              startTime: nextAvailable.startTime,
-              endTime: nextAvailable.endTime,
-              displayTime: nextAvailable.displayTime,
-              availableSlots: nextAvailable.availableSlots
-            }
-          : null
+        suggestedSlot: nextAvailable ?? {
+          message: 'No available wave slots found in the next 30 days for this doctor.'
+        }
       });
     }
   }
@@ -354,10 +341,12 @@ export class AppointmentService {
       );
 
       if (!isValidSlot) {
-        const nextAvailable = (matrix as any).slots?.[0];
+        const nextAvailable = await this.findNextAvailableSlot(dto.doctorId, dto.date);
         throw new BadRequestException({
           message: 'Requested slot is unavailable or invalid for rescheduling.',
-          suggestedSlot: nextAvailable ? `${nextAvailable.displayTime}` : 'No remaining slots available on this date.'
+          suggestedSlot: nextAvailable ?? {
+            message: 'No available slots found in the next 30 days for this doctor.'
+          }
         });
       }
     } else {
@@ -373,7 +362,7 @@ export class AppointmentService {
       // Step 2: Gatekeeper if no wave matches or if it's full
       if (!targetWave || targetWave.isFull || targetWave.availableSlots <= 0) {
         // Find alternative waves that have space
-        const nextAvailable = (matrix as any).waves?.find((w: any) => !w.isFull);
+        const nextAvailable = await this.findNextAvailableSlot(dto.doctorId, dto.date);
 
         throw new BadRequestException({
           statusCode: 400,
@@ -381,13 +370,9 @@ export class AppointmentService {
           message: !targetWave 
             ? 'Requested wave window is invalid for rescheduling. Please select a valid wave slot.'
             : 'Requested wave window is full for rescheduling.',
-          suggestedSlot: nextAvailable
-            ? {
-                startTime: nextAvailable.startTime,
-                endTime: nextAvailable.endTime,
-                displayTime: nextAvailable.displayTime
-              }
-            : null
+          suggestedSlot: nextAvailable ?? {
+            message: 'No available wave slots found in the next 30 days for this doctor.'
+          }
         });
       }
     }
