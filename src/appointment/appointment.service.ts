@@ -80,6 +80,25 @@ export class AppointmentService {
   const requestedStart = new Date(`${dto.date}T${dto.startTime}:00.000Z`);
   const requestedEnd = new Date(`${dto.date}T${dto.endTime}:00.000Z`);
 
+  const startOfDay = new Date(`${dto.date}T00:00:00.000Z`);
+  const endOfDay = new Date(`${dto.date}T23:59:59.999Z`);
+
+  const appointmentForSameDay = await this.prisma.appointment.findMany({
+    where: {
+      patientId: patient.id,
+      doctorId: doctor.id,
+      appointmentStatus: { in: [AppointmentStatus.BOOKED, AppointmentStatus.RESCHEDULED, AppointmentStatus.COMPLETED]},
+      startTime: {
+        gte: startOfDay,
+        lte: endOfDay,
+      }
+    }
+  });
+
+  if (appointmentForSameDay.length > 0) {
+    throw new BadRequestException("A slot has already been booked for this day")
+  }
+
   if (requestedStart <= new Date()) {
     throw new BadRequestException('Cannot book appointments for past dates or times.');
   }
@@ -286,161 +305,174 @@ export class AppointmentService {
 
 
   async rescheduleAppointment(appointmentId: string, userId: string, dto: BookAppointmentDto) {
-    const patient = await this.prisma.patient.findUnique({
-      where: { userId },
-      select: {
-        id: true,
-        appointment: {
-          where: { id: appointmentId },
-          select: { id: true, doctorId: true, startTime: true, endTime: true, appointmentStatus: true }
-        }
-      }
-    }) as {
-      id: string;
-      appointment: Array<{ id: string; doctorId: string; startTime: Date; endTime: Date; appointmentStatus: AppointmentStatus; }>;
-    } | null;
-    if (!patient) throw new NotFoundException('Patient profile not found.');
-
-    if (patient.appointment.length === 0) {
-      throw new NotFoundException('Appointment record not found for rescheduling.');
-    }
-
-    const oldAppointment = patient.appointment[0];
-
-    if (oldAppointment.appointmentStatus === AppointmentStatus.CANCELLED_BY_PATIENT || 
-        oldAppointment.appointmentStatus === AppointmentStatus.CANCELLED_BY_DOCTOR) {
-      throw new BadRequestException('Cannot reschedule a cancelled appointment. Please book a new one instead.');
-    }
-
-    const oldStartMs = new Date(oldAppointment.startTime).getTime();
-    const thrityMinutesInMs = 30 * 60 * 1000;
-    if (oldStartMs - Date.now() < thrityMinutesInMs) {
-      throw new BadRequestException('Rescheduling window has closed: Changes must be made at least 30 minutes before the original appointment time.');
-    }
-
-    const requestedStart = new Date(`${dto.date}T${dto.startTime}:00.000Z`);
-    const requestedEnd = new Date(`${dto.date}T${dto.endTime}:00.000Z`);
-
-    if (oldStartMs === requestedStart.getTime()) {
-      throw new BadRequestException('You already have an appointment booked for this exact time. Please choose a different slot to reschedule.');
-    }
-
-    if (requestedStart <= new Date()) {
-      throw new BadRequestException('Cannot reschedule to past dates or times. Please select a future slot.');
-    }
-
-    const doctor = await this.prisma.doctor.findUnique({ where: { id: oldAppointment.doctorId } });
-    if (!doctor) throw new NotFoundException('Associated doctor record not found for this appointment.');
-
-    const matrix = await this.doctorService.generateAndFilterSlots(oldAppointment.doctorId, dto.date);
-
-    if (doctor.schedulingType === SchedulingType.STREAM) {
-      const isValidSlot = (matrix as any).slots?.some(
-        (s: any) => new Date(s.startTime).getTime() === requestedStart.getTime()
-      );
-
-      if (!isValidSlot) {
-        const nextAvailable = await this.findNextAvailableSlot(dto.doctorId, dto.date);
-        throw new BadRequestException({
-          message: 'Requested slot is unavailable or invalid for rescheduling.',
-          suggestedSlot: nextAvailable ?? {
-            message: 'No available slots found in the next 30 days for this doctor.'
-          }
-        });
-      }
-    } else {
-      // Step 1: Find a wave block where the requested time fits cleanly inside
-      const targetWave = (matrix as any).waves?.find((w: any) => {
-        const waveStart = new Date(w.startTime).getTime();
-        const waveEnd = new Date(w.endTime).getTime();
-        const requestedStartMs = new Date(`${dto.date}T${dto.startTime}:00.000Z`).getTime();
-
-        return requestedStartMs >= waveStart && requestedStartMs < waveEnd;
-      });
-
-      // Step 2: Gatekeeper if no wave matches or if it's full
-      if (!targetWave || targetWave.isFull || targetWave.availableSlots <= 0) {
-        // Find alternative waves that have space
-        const nextAvailable = await this.findNextAvailableSlot(dto.doctorId, dto.date);
-
-        throw new BadRequestException({
-          statusCode: 400,
-          error: 'Bad Request',
-          message: !targetWave 
-            ? 'Requested wave window is invalid for rescheduling. Please select a valid wave slot.'
-            : 'Requested wave window is full for rescheduling.',
-          suggestedSlot: nextAvailable ?? {
-            message: 'No available wave slots found in the next 30 days for this doctor.'
-          }
-        });
-      }
-    }
-
-    return this.prisma.$transaction(async (tx) => {
-      const activeBookingOnNewSlot = await tx.appointment.findMany({
-        where: {
-          doctorId: oldAppointment.doctorId,
-          startTime: requestedStart,
-          endTime: requestedEnd,
-          appointmentStatus: { in: [AppointmentStatus.BOOKED, AppointmentStatus.RESCHEDULED] }
-        }
-      });
-
-      if (doctor.schedulingType === SchedulingType.STREAM && activeBookingOnNewSlot.length > 0) {
-        throw new ConflictException('This exact stream slot has already been booked by another patient. Please choose a different slot to reschedule.');
-      }
-
-      let nextTokenNumber: number | undefined = undefined;
-      if (doctor.schedulingType === SchedulingType.WAVE) {
-        if (activeBookingOnNewSlot.length >= doctor.maxWaveCapacity) {
-          throw new ConflictException('This wave window is entirely full. Please choose a different slot to reschedule.');
-        }
-        nextTokenNumber = activeBookingOnNewSlot.length + 1;
-      }
-
-      // Capture old wave window BEFORE updating the record
-      const oldWaveStart = new Date(oldAppointment.startTime);
-      const oldWaveEnd = new Date(oldAppointment.endTime);
-
-      const updatedAppointment = await tx.appointment.update({
+  const patient = await this.prisma.patient.findUnique({
+    where: { userId },
+    select: {
+      id: true,
+      appointment: {
         where: { id: appointmentId },
-        data: {
-          startTime: requestedStart,
-          endTime: requestedEnd,
-          appointmentStatus: AppointmentStatus.RESCHEDULED,
-          tokenNumber: nextTokenNumber
-        },
-      });
-
-      // --- TOKEN RESEQUENCING for old wave ---
-      // After the record moves out, remaining tokens in the old wave may have gaps.
-      // Re-assign tokens 1, 2, 3... in startTime order (which is booking order for wave).
-      if (doctor.schedulingType === SchedulingType.WAVE) {
-        const remainingOldWaveBookings = await tx.appointment.findMany({
-          where: {
-            doctorId: oldAppointment.doctorId,
-            startTime: oldWaveStart,
-            endTime: oldWaveEnd,
-            appointmentStatus: { in: [AppointmentStatus.BOOKED, AppointmentStatus.RESCHEDULED] }
-          },
-          orderBy: { tokenNumber: 'asc' }
-        });
-
-        // Only resequence if there are gaps (i.e. someone left mid-sequence)
-        if (remainingOldWaveBookings.length > 0) {
-          await Promise.all(
-            remainingOldWaveBookings.map((booking, index) =>
-              tx.appointment.update({
-                where: { id: booking.id },
-                data: { tokenNumber: index + 1 }
-              })
-            )
-          );
-        }
+        select: { id: true, doctorId: true, startTime: true, endTime: true, appointmentStatus: true }
       }
+    }
+  }) as {
+    id: string;
+    appointment: Array<{ id: string; doctorId: string; startTime: Date; endTime: Date; appointmentStatus: AppointmentStatus; }>;
+  } | null;
 
-      return updatedAppointment;
+  if (!patient) throw new NotFoundException('Patient profile not found.');
+  if (patient.appointment.length === 0) {
+    throw new NotFoundException('Appointment record not found for rescheduling.');
+  }
+
+  const oldAppointment = patient.appointment[0];
+  const targetDoctorId = oldAppointment.doctorId; // Protect against missing dto.doctorId
+
+  if (oldAppointment.appointmentStatus === AppointmentStatus.CANCELLED_BY_PATIENT || 
+      oldAppointment.appointmentStatus === AppointmentStatus.CANCELLED_BY_DOCTOR) {
+    throw new BadRequestException('Cannot reschedule a cancelled appointment. Please book a new one instead.');
+  }
+
+  const oldStartMs = new Date(oldAppointment.startTime).getTime();
+  const thirtyMinutesInMs = 30 * 60 * 1000;
+  if (oldStartMs - Date.now() < thirtyMinutesInMs) {
+    throw new BadRequestException('Rescheduling window has closed: Changes must be made at least 30 minutes before the original appointment time.');
+  }
+
+  const requestedStart = new Date(`${dto.date}T${dto.startTime}:00.000Z`);
+  const requestedEnd = new Date(`${dto.date}T${dto.endTime}:00.000Z`);
+
+  const startOfDay = new Date(`${dto.date}T00:00:00.000Z`);
+  const endOfDay = new Date(`${dto.date}T23:59:59.999Z`);
+
+  // BUGFIX: Added "id: { not: appointmentId }" so the patient doesn't block themselves on the same day
+  const appointmentForSameDay = await this.prisma.appointment.findMany({
+    where: {
+      id: { not: appointmentId },
+      patientId: patient.id,
+      doctorId: targetDoctorId,
+      appointmentStatus: { in: [AppointmentStatus.BOOKED, AppointmentStatus.RESCHEDULED, AppointmentStatus.COMPLETED]},
+      startTime: {
+        gte: startOfDay,
+        lte: endOfDay,
+      }
+    }
+  });
+
+  if (appointmentForSameDay.length > 0) {
+    throw new BadRequestException("A slot has already been booked for this day.");
+  }
+
+  if (oldStartMs === requestedStart.getTime()) {
+    throw new BadRequestException('You already have an appointment booked for this exact time.');
+  }
+
+  if (requestedStart <= new Date()) {
+    throw new BadRequestException('Cannot reschedule to past dates or times.');
+  }
+
+  const doctor = await this.prisma.doctor.findUnique({ where: { id: targetDoctorId } });
+  if (!doctor) throw new NotFoundException('Associated doctor record not found for this appointment.');
+
+  const matrix = await this.doctorService.generateAndFilterSlots(targetDoctorId, dto.date);
+
+  let targetedWaveBlock: any = null;
+
+  if (doctor.schedulingType === SchedulingType.STREAM) {
+    const isValidSlot = (matrix as any).slots?.some(
+      (s: any) => new Date(s.startTime).getTime() === requestedStart.getTime()
+    );
+
+    if (!isValidSlot) {
+      const nextAvailable = await this.findNextAvailableSlot(targetDoctorId, dto.date);
+      throw new BadRequestException({
+        message: 'Requested slot is unavailable or invalid for rescheduling.',
+        suggestedSlot: nextAvailable ?? { message: 'No available slots found in the next 30 days for this doctor.' }
+      });
+    }
+  } else {
+    targetedWaveBlock = (matrix as any).waves?.find((w: any) => {
+      const waveStart = new Date(w.startTime).getTime();
+      const waveEnd = new Date(w.endTime).getTime();
+      return requestedStart.getTime() >= waveStart && requestedStart.getTime() < waveEnd;
     });
 
+    if (!targetedWaveBlock || targetedWaveBlock.isFull || targetedWaveBlock.availableSlots <= 0) {
+      const nextAvailable = await this.findNextAvailableSlot(targetDoctorId, dto.date);
+      throw new BadRequestException({
+        statusCode: 400,
+        error: 'Bad Request',
+        message: !targetedWaveBlock ? 'Requested wave window is invalid.' : 'Requested wave window is full.',
+        suggestedSlot: nextAvailable ?? { message: 'No available wave slots found in the next 30 days for this doctor.' }
+      });
+    }
   }
+
+  return this.prisma.$transaction(async (tx) => {
+    // ✅ BUGFIX: Query wave bookings via absolute structural wave boundaries, not client DTO times
+    const waveQueryWindow = doctor.schedulingType === SchedulingType.WAVE && targetedWaveBlock
+      ? { startTime: new Date(targetedWaveBlock.startTime), endTime: new Date(targetedWaveBlock.endTime) }
+      : { startTime: requestedStart, endTime: requestedEnd };
+
+    const activeBookingOnNewSlot = await tx.appointment.findMany({
+      where: {
+        doctorId: targetDoctorId,
+        startTime: waveQueryWindow.startTime,
+        endTime: waveQueryWindow.endTime,
+        appointmentStatus: { in: [AppointmentStatus.BOOKED, AppointmentStatus.RESCHEDULED] }
+      }
+    });
+
+    if (doctor.schedulingType === SchedulingType.STREAM && activeBookingOnNewSlot.length > 0) {
+      throw new ConflictException('This exact stream slot has already been booked.');
+    }
+
+    let nextTokenNumber: number | undefined = undefined;
+    if (doctor.schedulingType === SchedulingType.WAVE) {
+      if (activeBookingOnNewSlot.length >= doctor.maxWaveCapacity) {
+        throw new ConflictException('This wave window is entirely full.');
+      }
+      nextTokenNumber = activeBookingOnNewSlot.length + 1;
+    }
+
+    const oldWaveStart = new Date(oldAppointment.startTime);
+    const oldWaveEnd = new Date(oldAppointment.endTime);
+
+    const updatedAppointment = await tx.appointment.update({
+      where: { id: appointmentId },
+      data: {
+        startTime: requestedStart,
+        endTime: requestedEnd,
+        appointmentStatus: AppointmentStatus.RESCHEDULED,
+        tokenNumber: nextTokenNumber
+      },
+    });
+
+    // --- TOKEN RESEQUENCING ---
+    if (doctor.schedulingType === SchedulingType.WAVE) {
+      const remainingOldWaveBookings = await tx.appointment.findMany({
+        where: {
+          doctorId: targetDoctorId,
+          startTime: oldWaveStart,
+          endTime: oldWaveEnd,
+          appointmentStatus: { in: [AppointmentStatus.BOOKED, AppointmentStatus.RESCHEDULED] }
+        },
+        orderBy: { tokenNumber: 'asc' }
+      });
+
+      // ✅ BUGFIX: Replaced execution pool mapping with a safe linear for-of execution cycle 
+      if (remainingOldWaveBookings.length > 0) {
+        let index = 1;
+        for (const booking of remainingOldWaveBookings) {
+          await tx.appointment.update({
+            where: { id: booking.id },
+            data: { tokenNumber: index }
+          });
+          index++;
+        }
+      }
+    }
+
+    return updatedAppointment;
+  });
+}
 }
