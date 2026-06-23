@@ -5,28 +5,42 @@
 
 */
 -- CreateEnum
-CREATE TYPE "OverrideType" AS ENUM ('MODIFIED', 'UNAVAILABLE');
+DO $$ BEGIN
+    CREATE TYPE "OverrideType" AS ENUM ('MODIFIED', 'UNAVAILABLE');
+EXCEPTION
+    WHEN duplicate_object THEN null;
+END $$;
 
 -- CreateEnum
-CREATE TYPE "SchedulingType" AS ENUM ('STREAM', 'WAVE');
+DO $$ BEGIN
+    CREATE TYPE "SchedulingType" AS ENUM ('STREAM', 'WAVE');
+EXCEPTION
+    WHEN duplicate_object THEN null;
+END $$;
 
 -- DropForeignKey
-ALTER TABLE "Availability" DROP CONSTRAINT "Availability_doctorId_fkey";
+DO $$ BEGIN
+    ALTER TABLE "Availability" DROP CONSTRAINT "Availability_doctorId_fkey";
+EXCEPTION
+    WHEN undefined_table THEN null;
+    WHEN undefined_object THEN null;
+END $$;
 
 -- AlterTable
-ALTER TABLE "Appointment" ADD COLUMN     "tokenNumber" INTEGER;
+ALTER TABLE "Appointment" ADD COLUMN IF NOT EXISTS "tokenNumber" INTEGER;
 
 -- AlterTable
-ALTER TABLE "Doctor" ADD COLUMN     "bufferTime" INTEGER NOT NULL DEFAULT 0,
-ADD COLUMN     "maxWaveCapacity" INTEGER NOT NULL DEFAULT 5,
-ADD COLUMN     "schedulingType" "SchedulingType" NOT NULL DEFAULT 'STREAM',
-ADD COLUMN     "slotDuration" INTEGER NOT NULL DEFAULT 15;
+ALTER TABLE "Doctor" 
+    ADD COLUMN IF NOT EXISTS "bufferTime" INTEGER NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS "maxWaveCapacity" INTEGER NOT NULL DEFAULT 5,
+    ADD COLUMN IF NOT EXISTS "schedulingType" "SchedulingType" NOT NULL DEFAULT 'STREAM',
+    ADD COLUMN IF NOT EXISTS "slotDuration" INTEGER NOT NULL DEFAULT 15;
 
 -- DropTable
-DROP TABLE "Availability";
+DROP TABLE IF EXISTS "Availability";
 
 -- CreateTable
-CREATE TABLE "RecurringAvailability" (
+CREATE TABLE IF NOT EXISTS "RecurringAvailability" (
     "id" TEXT NOT NULL,
     "doctorId" TEXT NOT NULL,
     "dayOfWeek" "Day" NOT NULL,
@@ -39,7 +53,7 @@ CREATE TABLE "RecurringAvailability" (
 );
 
 -- CreateTable
-CREATE TABLE "CustomAvailability" (
+CREATE TABLE IF NOT EXISTS "CustomAvailability" (
     "id" TEXT NOT NULL,
     "doctorId" TEXT NOT NULL,
     "date" TIMESTAMP(3) NOT NULL,
@@ -53,19 +67,27 @@ CREATE TABLE "CustomAvailability" (
 );
 
 -- CreateIndex
-CREATE INDEX "RecurringAvailability_doctorId_idx" ON "RecurringAvailability"("doctorId");
+CREATE INDEX IF NOT EXISTS "RecurringAvailability_doctorId_idx" ON "RecurringAvailability"("doctorId");
 
 -- CreateIndex
-CREATE INDEX "RecurringAvailability_dayOfWeek_idx" ON "RecurringAvailability"("dayOfWeek");
+CREATE INDEX IF NOT EXISTS "RecurringAvailability_dayOfWeek_idx" ON "RecurringAvailability"("dayOfWeek");
 
 -- CreateIndex
-CREATE INDEX "CustomAvailability_doctorId_idx" ON "CustomAvailability"("doctorId");
+CREATE INDEX IF NOT EXISTS "CustomAvailability_doctorId_idx" ON "CustomAvailability"("doctorId");
 
 -- CreateIndex
-CREATE INDEX "CustomAvailability_date_idx" ON "CustomAvailability"("date");
+CREATE INDEX IF NOT EXISTS "CustomAvailability_date_idx" ON "CustomAvailability"("date");
 
 -- AddForeignKey
-ALTER TABLE "RecurringAvailability" ADD CONSTRAINT "RecurringAvailability_doctorId_fkey" FOREIGN KEY ("doctorId") REFERENCES "Doctor"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+DO $$ BEGIN
+    ALTER TABLE "RecurringAvailability" ADD CONSTRAINT "RecurringAvailability_doctorId_fkey" FOREIGN KEY ("doctorId") REFERENCES "Doctor"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+EXCEPTION
+    WHEN duplicate_object THEN null;
+END $$;
 
 -- AddForeignKey
-ALTER TABLE "CustomAvailability" ADD CONSTRAINT "CustomAvailability_doctorId_fkey" FOREIGN KEY ("doctorId") REFERENCES "Doctor"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+DO $$ BEGIN
+    ALTER TABLE "CustomAvailability" ADD CONSTRAINT "CustomAvailability_doctorId_fkey" FOREIGN KEY ("doctorId") REFERENCES "Doctor"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+EXCEPTION
+    WHEN duplicate_object THEN null;
+END $$;

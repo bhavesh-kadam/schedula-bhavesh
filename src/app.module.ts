@@ -9,10 +9,12 @@ import { AuthModule } from './auth/auth.module';
 import { AppointmentService } from './appointment/appointment.service';
 import { AppointmentModule } from './appointment/appointment.module';
 import { DoctorService } from './doctor/doctor.service';
+import { NotificationService } from './notification/notification.service';
+import { NotificationModule } from './notification/notification.module';
 
 @Module({
-  imports: [PrismaModule, PatientModule, DoctorModule, AuthModule, AppointmentModule],
+  imports: [PrismaModule, PatientModule, DoctorModule, AuthModule, AppointmentModule, NotificationModule],
   controllers: [AppController],
-  providers: [AppService, PrismaService, DoctorService, AppointmentService],
+  providers: [AppService, PrismaService, DoctorService, AppointmentService, NotificationService],
 })
 export class AppModule {}
