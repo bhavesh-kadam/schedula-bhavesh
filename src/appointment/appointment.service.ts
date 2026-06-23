@@ -93,7 +93,6 @@ export class AppointmentService {
     );
 
     if (!requestedSlot) {
-      // const nextAvailable = (matrix as any).slots?.[0];
       const nextAvailable = await this.findNextAvailableSlot(dto.doctorId, dto.date);
       throw new BadRequestException({
         statusCode: 400,
@@ -109,10 +108,6 @@ export class AppointmentService {
     const requestedWave = (matrix as any).waves?.find(
       (w: any) => new Date(w.startTime).getTime() === requestedStart.getTime()
     );
-
-    // hello kamesh sir, 
-    // should i combine following two if conditions into one, 
-    // since both throw the same error with different message?
 
     if (!requestedWave) {
       const nextAvailable = await this.findNextAvailableSlot(dto.doctorId, dto.date);
