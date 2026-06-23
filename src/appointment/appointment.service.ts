@@ -80,6 +80,25 @@ export class AppointmentService {
   const requestedStart = new Date(`${dto.date}T${dto.startTime}:00.000Z`);
   const requestedEnd = new Date(`${dto.date}T${dto.endTime}:00.000Z`);
 
+  const startOfDay = new Date(`${dto.date}T00:00:00.000Z`);
+  const endOfDay = new Date(`${dto.date}T23:59:59.999Z`);
+
+  const appointmentForSameDay = await this.prisma.appointment.findMany({
+    where: {
+      patientId: patient.id,
+      doctorId: doctor.id,
+      appointmentStatus: { in: [AppointmentStatus.BOOKED, AppointmentStatus.RESCHEDULED, AppointmentStatus.COMPLETED]},
+      startTime: {
+        gte: startOfDay,
+        lte: endOfDay,
+      }
+    }
+  });
+
+  if (appointmentForSameDay) {
+    throw new BadRequestException("A slot has already been booked for this day")
+  }
+
   if (requestedStart <= new Date()) {
     throw new BadRequestException('Cannot book appointments for past dates or times.');
   }
