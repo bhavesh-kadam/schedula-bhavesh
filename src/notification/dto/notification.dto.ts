@@ -1,5 +1,6 @@
-import { IsEnum, IsNotEmpty, IsString, IsUUID } from "class-validator";
-import { NotificationType } from "src/generated/prisma/enums";
+import { Transform } from "class-transformer";
+import { IsInt, IsOptional, Max, Min } from "class-validator";
+
 
 export class GetNotificationDto {
     @IsOptional()

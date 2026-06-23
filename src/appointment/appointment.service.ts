@@ -5,6 +5,12 @@ import {
   ConflictException,
   ForbiddenException
 } from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
+import {
+    AppointmentBookedEvent,
+    AppointmentCancelledEvent,
+    AppointmentRescheduledEvent
+} from 'src/notification/events/appointment.events';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { DoctorService } from 'src/doctor/doctor.service';
 import { BookAppointmentDto } from './dto/appointment.dto';
@@ -15,6 +21,7 @@ export class AppointmentService {
   constructor(
     private prisma: PrismaService,
     private doctorService: DoctorService,
+    private eventEmitter: EventEmitter2,
   ) { }
 
   
@@ -71,10 +78,10 @@ export class AppointmentService {
 
   // 1. Book Appointment
   async bookAppointment(userId: string, dto: BookAppointmentDto) {
-  const patient = await this.prisma.patient.findUnique({ where: { userId } });
+  const patient = await this.prisma.patient.findUnique({ where: { userId }, include: { user: { select: { firstName: true, lastName: true, email: true } } } });
   if (!patient) throw new NotFoundException('Patient record not found.');
 
-  const doctor = await this.prisma.doctor.findUnique({ where: { id: dto.doctorId } });
+  const doctor = await this.prisma.doctor.findUnique({ where: { id: dto.doctorId }, include: { user: { select: { firstName: true, lastName: true, email: true } } } });
   if (!doctor) throw new NotFoundException('Doctor record not found.');
 
   const requestedStart = new Date(`${dto.date}T${dto.startTime}:00.000Z`);
@@ -171,7 +178,7 @@ export class AppointmentService {
         throw new ConflictException('This exact stream slot has already been booked.');
       }
 
-      return tx.appointment.create({
+      const appointment = tx.appointment.create({
         data: {
           patientId: patient.id,
           doctorId: dto.doctorId,
@@ -180,6 +187,20 @@ export class AppointmentService {
           appointmentStatus: 'BOOKED'
         }
       });
+
+      this.eventEmitter.emit('appointment.booked', new AppointmentBookedEvent(
+          patient.id,
+          patient.user.email,         // need to include user in patient query
+          `${patient.user.firstName} ${patient.user.lastName}`,
+          `${doctor.user.firstName} ${doctor.user.lastName}`,  // need user on doctor too
+          dto.date,
+          dto.startTime,
+          dto.endTime,
+          doctor.schedulingType,
+          undefined  // no token for STREAM
+      ));
+
+      return appointment;
 
     } else {
       // 2. Validate overall wave capacity
@@ -196,7 +217,7 @@ export class AppointmentService {
       // 4. Token numbers will now increment properly (1, 2, 3...)
       const nextTokenNumber = activeBookings.length + 1;
 
-      return tx.appointment.create({
+      const appointment =  tx.appointment.create({
         data: {
           patientId: patient.id,
           doctorId: dto.doctorId,
@@ -206,6 +227,20 @@ export class AppointmentService {
           tokenNumber: nextTokenNumber
         }
       });
+
+      this.eventEmitter.emit('appointment.booked', new AppointmentBookedEvent(
+          patient.id,
+          patient.user.email,
+          `${patient.user.firstName} ${patient.user.lastName}`,
+          `${doctor.user.firstName} ${doctor.user.lastName}`,
+          dto.date,
+          dto.startTime,
+          dto.endTime,
+          doctor.schedulingType,
+          nextTokenNumber
+      ));
+
+      return appointment;
     }
   });
 }
@@ -236,11 +271,19 @@ export class AppointmentService {
 
   // 3. Cancel Appointment
   async cancelAppointment(appointmentId: string, userId: string) {
-    const patient = await this.prisma.patient.findUnique({ where: { userId } });
+    const patient = await this.prisma.patient.findUnique({
+        where: { userId },
+        include: { user: { select: { firstName: true, lastName: true, email: true } } }
+    });
     if (!patient) throw new NotFoundException('Patient profile not found.');
 
     const appointment = await this.prisma.appointment.findUnique({
-      where: { id: appointmentId },
+        where: { id: appointmentId },
+        include: {
+            doctor: {
+                include: { user: { select: { firstName: true, lastName: true } } }
+            }
+        }
     });
 
     // Rule: Invalid appointment ID
@@ -266,10 +309,25 @@ export class AppointmentService {
       throw new BadRequestException('Action Invalid: Historical or past appointments cannot be cancelled.');
     }
 
-    return this.prisma.appointment.update({
+    const updated = await this.prisma.appointment.update({
       where: { id: appointmentId },
       data: { appointmentStatus: AppointmentStatus.CANCELLED_BY_PATIENT },
+      include: {
+        doctor: { include: { user: { select: { firstName: true, lastName: true } } } },
+      },
     });
+
+    this.eventEmitter.emit('appointment.cancelled', new AppointmentCancelledEvent(
+        patient.id,
+        patient.user.email,
+        `${patient.user.firstName} ${patient.user.lastName}`,
+        `${updated.doctor.user.firstName} ${updated.doctor.user.lastName}`,
+        updated.startTime.toISOString().split('T')[0],
+        updated.startTime.toISOString().substring(11, 16),
+        'PATIENT'
+    ));
+
+    return updated;
   }
 
   // 4. Doctor Appointment View
@@ -309,6 +367,7 @@ export class AppointmentService {
     where: { userId },
     select: {
       id: true,
+      user: { select: { firstName: true, lastName: true, email: true }},
       appointment: {
         where: { id: appointmentId },
         select: { id: true, doctorId: true, startTime: true, endTime: true, appointmentStatus: true }
@@ -316,6 +375,7 @@ export class AppointmentService {
     }
   }) as {
     id: string;
+    user: { firstName: string; lastName: string; email: string };
     appointment: Array<{ id: string; doctorId: string; startTime: Date; endTime: Date; appointmentStatus: AppointmentStatus; }>;
   } | null;
 
@@ -370,7 +430,10 @@ export class AppointmentService {
     throw new BadRequestException('Cannot reschedule to past dates or times.');
   }
 
-  const doctor = await this.prisma.doctor.findUnique({ where: { id: targetDoctorId } });
+  const doctor = await this.prisma.doctor.findUnique({ 
+    where: { id: targetDoctorId },
+    include: { user: { select: { firstName: true, lastName: true } } }
+  });
   if (!doctor) throw new NotFoundException('Associated doctor record not found for this appointment.');
 
   const matrix = await this.doctorService.generateAndFilterSlots(targetDoctorId, dto.date);
@@ -446,6 +509,19 @@ export class AppointmentService {
         tokenNumber: nextTokenNumber
       },
     });
+
+    this.eventEmitter.emit('appointment.rescheduled', new AppointmentRescheduledEvent(
+        patient.id,
+        patient.user.email,
+        `${patient.user.firstName} ${patient.user.lastName}`,
+        `${doctor.user.firstName} ${doctor.user.lastName}`,
+        oldAppointment.startTime.toISOString().split('T')[0],
+        oldAppointment.startTime.toISOString().substring(11, 16),
+        dto.date,
+        dto.startTime,
+        dto.endTime,
+        nextTokenNumber
+    ));
 
     // --- TOKEN RESEQUENCING ---
     if (doctor.schedulingType === SchedulingType.WAVE) {

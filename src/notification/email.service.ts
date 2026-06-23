@@ -27,7 +27,7 @@ export class EmailService {
         schedulingType: string;
         tokenNumber?: number;
     }) {
-        const subject = `Appointment Confirmed — Dr. ${payload.doctorName}`;
+        const subject = `Appointment Confirmed`;
         const html = `
             <div style="font-family: Arial, sans-serif; max-width: 600px; margin: auto; padding: 24px; border: 1px solid #e0e0e0; border-radius: 8px;">
                 <h2 style="color: #2e7d32;">Appointment Confirmed</h2>
@@ -53,7 +53,7 @@ export class EmailService {
         startTime: string;
         cancelledBy: 'DOCTOR' | 'PATIENT';
     }) {
-        const subject = `Appointment Cancelled — Dr. ${payload.doctorName}`;
+        const subject = `Appointment Cancelled`;
         const cancelledByText = payload.cancelledBy === 'DOCTOR'
             ? `This appointment was cancelled by Dr. ${payload.doctorName}.`
             : 'You have cancelled this appointment.';
@@ -83,7 +83,7 @@ export class EmailService {
         newEndTime: string;
         tokenNumber?: number;
     }) {
-        const subject = `Appointment Rescheduled — Dr. ${payload.doctorName}`;
+        const subject = `Appointment Rescheduled`;
         const html = `
             <div style="font-family: Arial, sans-serif; max-width: 600px; margin: auto; padding: 24px; border: 1px solid #e0e0e0; border-radius: 8px;">
                 <h2 style="color: #1565c0;">Appointment Rescheduled</h2>
