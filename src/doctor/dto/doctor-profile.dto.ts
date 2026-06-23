@@ -1,5 +1,5 @@
 import { Transform, Type } from "class-transformer";
-import { IsArray, IsEnum, IsInt, IsNotEmpty, IsNumber, IsOptional, IsString, Max, Min, ValidateNested, IsDateString, Matches } from "class-validator";
+import { IsArray, IsEnum, IsInt, IsNotEmpty, IsNumber, IsOptional, IsString, Max, Min, ValidateNested, IsDateString, Matches, IsIn } from "class-validator";
 import { ActiveStatus, Day, OverrideType, SchedulingType } from "src/generated/prisma/enums";
 
 export class RecurringAvailabilityDto {
@@ -14,6 +14,22 @@ export class RecurringAvailabilityDto {
     @IsNotEmpty()
     @IsString()
     @Matches(/^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$/, { message: 'endTime must be in HH:mm format' })
+    endTime: string;
+}
+
+export class BulkRecurringAvailabilityDto {
+    @IsArray()
+    @IsEnum(Day, {each: true})
+    daysOfWeek: Day[];
+
+    @IsNotEmpty()
+    @IsString()
+    @Matches(/^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$/, { message: 'startTime must be in HH:mm format' })
+    startTime: string;
+
+    @IsNotEmpty()
+    @IsString()
+    @Matches(/^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$/, { message: 'startTime must be in HH:mm format' })
     endTime: string;
 }
 
@@ -170,6 +186,6 @@ export class GetSlotsQueryDto {
     @IsOptional()
     @Transform(({ value }) => Number(value))
     @IsInt()
-    @IsEnum([10, 15, 30, 60], { message: 'Duration must be either 10, 15, 30, or 60 minutes' })
+    @IsIn([10, 15, 30, 60], { message: 'Duration must be either 10, 15, 30, or 60 minutes' })
     duration = 30; // Default slot duration to 30 minutes if not provided
 }

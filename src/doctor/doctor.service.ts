@@ -1,7 +1,7 @@
 import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException, UnauthorizedException } from '@nestjs/common';
 import { ActiveStatus, Role, Day, OverrideType, SchedulingType, AppointmentStatus } from 'src/generated/prisma/enums';
 import { PrismaService } from 'src/prisma/prisma.service';
-import { GetDoctorsQueryDto, SaveProfileDto, UpdateProfileDto, RecurringAvailabilityDto, CustomAvailabilityDto } from './dto/doctor-profile.dto';
+import { GetDoctorsQueryDto, SaveProfileDto, UpdateProfileDto, RecurringAvailabilityDto, CustomAvailabilityDto, BulkRecurringAvailabilityDto } from './dto/doctor-profile.dto';
 import { Prisma } from 'src/generated/prisma/client';
 
 @Injectable()
@@ -351,6 +351,45 @@ export class DoctorService {
                 endTime: dto.endTime
             }
         });
+    }
+
+    async addBulkRecurringAvailability(
+        userId: string,
+        dto: BulkRecurringAvailabilityDto,
+    ) {
+        const doctor = await this.getDoctorByUserId(userId);
+
+        if (this.parseTimeToMinutes(dto.startTime) >= this.parseTimeToMinutes(dto.endTime)) {
+            throw new BadRequestException("Invalid time range: Start time must be before end time");
+        }
+
+        const records: Prisma.RecurringAvailabilityCreateManyInput[] = [];
+
+        for (const day of dto.daysOfWeek) {
+            const existing = await this.prisma.recurringAvailability.findMany({
+                where: {
+                    doctorId: doctor.id,
+                    dayOfWeek: day,
+                }
+            });
+
+            for (const slot of existing) {
+                if (this.checkTimeOverlap(dto.startTime, dto.endTime, slot.startTime, slot.endTime)) {
+                    throw new ConflictException(`Overlap detected on ${day}`);
+                }
+            }
+            records.push({
+                doctorId: doctor.id,
+                dayOfWeek: day,
+                startTime: dto.startTime,
+                endTime: dto.endTime
+            });
+        }
+
+        return this.prisma.recurringAvailability.createMany({
+            data: records,
+        });
+        
     }
 
     async getDoctorRecurringAvailability(userId: string) {
