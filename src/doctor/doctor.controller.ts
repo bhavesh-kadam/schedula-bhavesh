@@ -5,7 +5,7 @@ import { RoleGuard } from 'src/auth/guards/role.guard';
 import { Roles } from 'src/common/decorators/roles.decorator';
 import { Role } from 'src/generated/prisma/enums';
 import { GetUser } from 'src/common/decorators/getUser.decorator';
-import { GetDoctorsQueryDto, SaveProfileDto, UpdateProfileDto, RecurringAvailabilityDto, CustomAvailabilityDto, GetSlotsQueryDto } from './dto/doctor-profile.dto';
+import { GetDoctorsQueryDto, SaveProfileDto, UpdateProfileDto, RecurringAvailabilityDto, CustomAvailabilityDto, GetSlotsQueryDto, BulkRecurringAvailabilityDto } from './dto/doctor-profile.dto';
 
 interface JwtPayload {
   sub: string;
@@ -47,6 +47,13 @@ export class DoctorController {
   @Post('/availability')
   async addRecurringAvailability(@GetUser() user: JwtPayload, @Body() dto: RecurringAvailabilityDto) {
     return this.doctorService.addRecurringAvailability(user.sub, dto);
+  }
+
+  @UseGuards(AuthGuard, RoleGuard)
+  @Roles(Role.DOCTOR)
+  @Post('/availability/bulk')
+  async addBulkRecurringAvailability(@GetUser() user: JwtPayload, @Body() dto: BulkRecurringAvailabilityDto) {
+    return this.doctorService.addBulkRecurringAvailability(user.sub, dto);
   }
 
   @UseGuards(AuthGuard, RoleGuard)
