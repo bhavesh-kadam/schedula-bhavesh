@@ -70,6 +70,14 @@ enum SchedulingType {
   WAVE
 }
 
+enum NotificationType {
+  APPOINTMENT_BOOKED
+  APPOINTMENT_CANCELLED
+  APPOINTMENT_RESCHEDULED
+  APPOINTMENT_REMINDER
+  FOLLOW_UP_REMINDER
+}
+
 model User {
   id String @id @default(uuid())
   firstName String
@@ -89,7 +97,6 @@ model User {
   patient Patient?
   doctor Doctor?
 
-  notification Notification[]
   refreshToken RefreshToken[]
 
   @@index([role])
@@ -105,6 +112,7 @@ model Patient {
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   appointment Appointment[]
+  notification Notification[]
 
   @@index([userId])
 }
@@ -202,17 +210,17 @@ model CustomAvailability {
 model Notification {
   id String @id @default(uuid())
 
-  userId String
-  user User @relation(fields: [userId], references: [id])
+  patientId String
+  patient Patient @relation(fields: [patientId], references: [id])
 
   title String
   message String
 
+  type NotificationType
+
   isRead Boolean @default(false)
 
   createdAt DateTime @default(now())
-
-  @@index([userId])
 }
 
 model RefreshToken {

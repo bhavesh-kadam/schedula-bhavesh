@@ -9,10 +9,21 @@ import { AuthModule } from './auth/auth.module';
 import { AppointmentService } from './appointment/appointment.service';
 import { AppointmentModule } from './appointment/appointment.module';
 import { DoctorService } from './doctor/doctor.service';
+import { NotificationService } from './notification/notification.service';
+import { NotificationModule } from './notification/notification.module';
+import { EventEmitterModule } from '@nestjs/event-emitter';
 
 @Module({
-  imports: [PrismaModule, PatientModule, DoctorModule, AuthModule, AppointmentModule],
+  imports: [
+    PrismaModule, 
+    PatientModule, 
+    DoctorModule, 
+    AuthModule, 
+    AppointmentModule, 
+    NotificationModule,
+    EventEmitterModule.forRoot(),
+  ],
   controllers: [AppController],
-  providers: [AppService, PrismaService, DoctorService, AppointmentService],
+  providers: [AppService, PrismaService, DoctorService, AppointmentService, NotificationService],
 })
 export class AppModule {}
